@@ -51,16 +51,16 @@ func main() {
 	for {
 		select {
 		case candidate := <-candidates:
-			entryTime := time.Now()
+			entryTime := candidate.Timestamp
 			proposedQuantity := portfolio.StartingEquity / candidate.LastPrice * 0.8
-			stopPrice := max(candidate.LastPrice*0.95, candidate.LastPrice-candidate.Metrics.ATR*1.5)
+			stopPrice := max(candidate.LastPrice*0.95, candidate.LastPrice-candidate.Metrics.ATR*2)
 			if !portfolio.HasPosition(candidate.Symbol, entryTime) {
 				portfolio.EnterPosition(candidate.Symbol, entryTime, candidate.LastPrice, uint(proposedQuantity), stopPrice)
 			}
 		case <-ctx.Done():
 			return
-		case <-time.After(2 * time.Second):
-			fmt.Println("Stopping scanner after 2 seconds")
+		case <-time.After(4 * time.Second):
+			fmt.Println("Stopping scanner after 4 seconds")
 			portfolio.GenerateReport()
 			cancel()
 			return

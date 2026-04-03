@@ -21,7 +21,8 @@ func NewScanner(config *config.Config, state *state.State, symbols domain.Symbol
 }
 
 func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- domain.Candidate) error {
-	n := 10 // the number of workers
+	// TODO: multiple workers causes out of order candidates, need to add a timestamp and sort them in the main loop
+	n := 1 // the number of workers
 
 	for range n {
 		go func() {
@@ -51,7 +52,7 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 						s.portfolio.ExitPosition(bar.Symbol, bar.Timestamp, lastPrice)
 						continue
 					}
-					newStopPrice := lastPrice - metrics.ATR*1.5
+					newStopPrice := max(lastPrice*0.95, lastPrice-metrics.ATR*2)
 					if newStopPrice > position.StopPrice {
 						s.portfolio.UpdateStopPrice(bar.Symbol, bar.Timestamp, newStopPrice)
 					}
@@ -65,6 +66,7 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 				select {
 				case out <- domain.Candidate{
 					Symbol:    bar.Symbol,
+					Timestamp: bar.Timestamp,
 					Metrics:   metrics,
 					LastPrice: lastPrice,
 				}:

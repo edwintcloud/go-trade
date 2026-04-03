@@ -143,6 +143,14 @@ func (p *Portfolio) GenerateReport() {
 	fmt.Println("Positions:")
 	for date, positions := range p.Positions {
 		for _, position := range positions {
+			if position.ExitTimestamp.IsZero() {
+				fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: OPEN, Qty: %d\n",
+					date, position.Symbol,
+					position.EntryTimestamp.In(markethours.Location).Format("15:04"), position.EntryPrice,
+					position.Quantity)
+				continue
+			}
+
 			profitLoss := float64(position.Quantity) * (position.ExitPrice - position.EntryPrice)
 			fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f\n",
 				date, position.Symbol,
