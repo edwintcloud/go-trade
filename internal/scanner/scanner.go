@@ -3,7 +3,6 @@ package scanner
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/edwintcloud/go-trade/internal/config"
 	"github.com/edwintcloud/go-trade/internal/domain"
@@ -11,13 +10,14 @@ import (
 )
 
 type Scanner struct {
-	config  *config.Config
-	state   *state.State
-	symbols domain.Symbols
+	config    *config.Config
+	state     *state.State
+	symbols   domain.Symbols
+	portfolio *domain.Portfolio
 }
 
-func NewScanner(config *config.Config, state *state.State, symbols domain.Symbols) *Scanner {
-	return &Scanner{config: config, state: state, symbols: symbols}
+func NewScanner(config *config.Config, state *state.State, symbols domain.Symbols, portfolio *domain.Portfolio) *Scanner {
+	return &Scanner{config: config, state: state, symbols: symbols, portfolio: portfolio}
 }
 
 func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- domain.Candidate) error {
@@ -26,6 +26,9 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 	for range n {
 		go func() {
 			for bar := range in {
+				if bar.Volume == 0 || bar.Open == 0 || bar.Close == 0 || bar.High == 0 || bar.Low == 0 {
+					continue
+				}
 				symbol, ok := s.symbols.Get(bar.Symbol)
 				if !ok {
 					fmt.Printf("Received bar for unknown symbol: %s\n", bar.Symbol)
@@ -33,17 +36,38 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 				}
 				symbol.SetLastPrice((bar.High + bar.Low) / 2)
 				symbol.AddBar(bar) // updates metrics
+				metrics := symbol.GetMetrics()
+				lastPrice := symbol.GetLastPrice()
 
-				// give the async indicator pipeline time to process the bar
-				time.Sleep(5 * time.Millisecond)
+				// check for blocking conditions
+				if s.portfolio.TradingBlocked() || s.state.IsPaused() {
+					continue
+				}
+
+				// update stop price and check exit conditions
+				if s.portfolio.HasPosition(bar.Symbol, bar.Timestamp) {
+					position, _ := s.portfolio.GetPosition(bar.Symbol, bar.Timestamp)
+					if lastPrice < position.StopPrice {
+						s.portfolio.ExitPosition(bar.Symbol, bar.Timestamp, lastPrice)
+						continue
+					}
+					newStopPrice := lastPrice - metrics.ATR*1.5
+					if newStopPrice > position.StopPrice {
+						s.portfolio.UpdateStopPrice(bar.Symbol, bar.Timestamp, newStopPrice)
+					}
+				}
 
 				// evaluate
-				candidate, shouldEmit, _ := s.evaluate(symbol)
+				shouldEmit, _ := s.evaluate(metrics, lastPrice)
 				if !shouldEmit {
 					continue
 				}
 				select {
-				case out <- candidate:
+				case out <- domain.Candidate{
+					Symbol:    bar.Symbol,
+					Metrics:   metrics,
+					LastPrice: lastPrice,
+				}:
 				case <-ctx.Done():
 					return
 				}
@@ -54,34 +78,28 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 	return nil
 }
 
-func (s *Scanner) evaluate(symbol *domain.Symbol) (domain.Candidate, bool, string) {
-	metrics := symbol.GetMetrics()
-	lastPrice := symbol.GetLastPrice()
+func (s *Scanner) evaluate(metrics domain.Metrics, lastPrice float64) (bool, string) {
 	if lastPrice == 0 || metrics.ATR == 0 || metrics.SMA20 == 0 || metrics.MACD == 0 || metrics.MACDSignal == 0 || metrics.StochK == 0 || metrics.StochD == 0 || metrics.Volume5m == 0 || metrics.RSI == 0 {
-		return domain.Candidate{}, false, "not-enough-data"
+		return false, "not-enough-data"
 	}
 
 	if lastPrice <= metrics.SMA20 {
-		return domain.Candidate{}, false, "price-below-sma20"
+		return false, "price-below-sma20"
 	}
 	if metrics.MACD <= metrics.MACDSignal {
-		return domain.Candidate{}, false, "macd-below-signal"
+		return false, "macd-below-signal"
 	}
 	if metrics.StochK <= metrics.StochD {
-		return domain.Candidate{}, false, "stoch-k-below-d"
+		return false, "stoch-k-below-d"
 	}
 	if metrics.Volume5m <= 1000 {
-		return domain.Candidate{}, false, "low-volume"
+		return false, "low-volume"
 	}
 	if metrics.RSI <= 70 {
-		return domain.Candidate{}, false, "rsi-not-overbought"
+		return false, "rsi-not-overbought"
 	}
 
-	return domain.Candidate{
-		Symbol: symbol.Name,
-		LastPrice: lastPrice,
-		Metrics: metrics,
-	}, true, ""
+	return true, ""
 }
 
 // func (s *Scanner) Scan(portfolio *portfolio.Portfolio, symbols domain.Symbols, minuteBars <-chan stream.Bar) {

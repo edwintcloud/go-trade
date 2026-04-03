@@ -1,4 +1,4 @@
-package portfolio
+package domain
 
 import (
 	"fmt"
@@ -75,7 +75,7 @@ func (p *Portfolio) ExitPosition(symbol string, exitTimestamp time.Time, exitPri
 	p.Equity += float64(position.Quantity) * (position.ExitPrice - position.EntryPrice)
 }
 
-func (p *Portfolio) InPosition(symbol string, timestamp time.Time) bool {
+func (p *Portfolio) HasPosition(symbol string, timestamp time.Time) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.inPosition(symbol, timestamp)
@@ -139,13 +139,13 @@ func (p *Portfolio) GenerateReport() {
 	fmt.Printf("Final Equity: $%.2f\n", p.Equity)
 	fmt.Printf("Total P/L: $%.2f\n", p.Equity-p.StartingEquity)
 	fmt.Printf("Return: %.2f%%\n", (p.Equity-p.StartingEquity)/p.StartingEquity*100)
-	fmt.Printf("Winrate: %.2f%%\n", p.calculateWinRate() * 100)
+	fmt.Printf("Winrate: %.2f%%\n", p.calculateWinRate()*100)
 	fmt.Println("Positions:")
 	for date, positions := range p.Positions {
 		for _, position := range positions {
 			profitLoss := float64(position.Quantity) * (position.ExitPrice - position.EntryPrice)
 			fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f\n",
-				date, position.Symbol, 
+				date, position.Symbol,
 				position.EntryTimestamp.In(markethours.Location).Format("15:04"), position.EntryPrice,
 				position.ExitTimestamp.In(markethours.Location).Format("15:04"), position.ExitPrice,
 				position.Quantity, profitLoss)
@@ -154,7 +154,7 @@ func (p *Portfolio) GenerateReport() {
 }
 
 func (p *Portfolio) TradingBlocked() bool {
-	maxLossCondition := p.Equity < p.StartingEquity*0.9 // 10% max daily loss
+	maxLossCondition := p.Equity < p.StartingEquity*0.9     // 10% max daily loss
 	profitGoalCondition := p.Equity > p.StartingEquity*1.05 // 5% profit goal
 	return maxLossCondition || profitGoalCondition
 }

@@ -5,7 +5,7 @@ import (
 )
 
 type State struct {
-	paused       atomic.Bool
+	paused atomic.Bool
 }
 
 func NewState() *State {

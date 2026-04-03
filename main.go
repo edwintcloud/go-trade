@@ -36,10 +36,10 @@ func main() {
 		return
 	}
 
-	// portfolio := portfolio.NewPortfolio(25000)
+	portfolio := domain.NewPortfolio(25000)
 	candidates := make(chan domain.Candidate, 1000)
 
-	scanner := scanner.NewScanner(config, state, symbols)
+	scanner := scanner.NewScanner(config, state, symbols, portfolio)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	err = scanner.Start(ctx, minuteBars, candidates)
@@ -51,11 +51,17 @@ func main() {
 	for {
 		select {
 		case candidate := <-candidates:
-			fmt.Printf("Candidate found: %+v\n", candidate)
+			entryTime := time.Now()
+			proposedQuantity := portfolio.StartingEquity / candidate.LastPrice * 0.8
+			stopPrice := max(candidate.LastPrice*0.95, candidate.LastPrice-candidate.Metrics.ATR*1.5)
+			if !portfolio.HasPosition(candidate.Symbol, entryTime) {
+				portfolio.EnterPosition(candidate.Symbol, entryTime, candidate.LastPrice, uint(proposedQuantity), stopPrice)
+			}
 		case <-ctx.Done():
 			return
-		case <-time.After(10 * time.Second):
-			fmt.Println("Stopping scanner after 10 seconds")
+		case <-time.After(2 * time.Second):
+			fmt.Println("Stopping scanner after 2 seconds")
+			portfolio.GenerateReport()
 			cancel()
 			return
 		}

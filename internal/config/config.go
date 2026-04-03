@@ -15,7 +15,7 @@ type Config struct {
 
 func LoadConfig() *Config {
 	return &Config{
-		AlpacaAPIKey: os.Getenv("ALPACA_API_KEY"),
+		AlpacaAPIKey:    os.Getenv("ALPACA_API_KEY"),
 		AlpacaAPISecret: os.Getenv("ALPACA_API_SECRET"),
 	}
 }
