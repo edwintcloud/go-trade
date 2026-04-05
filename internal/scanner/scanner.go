@@ -41,20 +41,20 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 				lastPrice := symbol.GetLastPrice()
 
 				// check for blocking conditions
-				if s.portfolio.TradingBlocked() || s.state.IsPaused() {
+				if s.portfolio.IsTradingBlocked() || s.state.IsPaused() {
 					continue
 				}
 
 				// update stop price and check exit conditions
-				if s.portfolio.HasPosition(bar.Symbol, bar.Timestamp) {
-					position, _ := s.portfolio.GetPosition(bar.Symbol, bar.Timestamp)
+				if s.portfolio.HasOpenTrade(bar.Symbol, bar.Timestamp) {
+					position, _ := s.portfolio.GetTrade(bar.Symbol, bar.Timestamp)
 					if lastPrice < position.StopPrice {
-						s.portfolio.ExitPosition(bar.Symbol, bar.Timestamp, lastPrice)
+						s.portfolio.ExitTrade(bar.Symbol, bar.Timestamp, lastPrice)
 						continue
 					}
 					newStopPrice := max(lastPrice*0.95, lastPrice-metrics.ATR*2)
 					if newStopPrice > position.StopPrice {
-						s.portfolio.UpdateStopPrice(bar.Symbol, bar.Timestamp, newStopPrice)
+						s.portfolio.UpdateStopPrice(bar.Symbol, newStopPrice)
 					}
 				}
 
@@ -103,60 +103,3 @@ func (s *Scanner) evaluate(metrics domain.Metrics, lastPrice float64) (bool, str
 
 	return true, ""
 }
-
-// func (s *Scanner) Scan(portfolio *portfolio.Portfolio, symbols domain.Symbols, minuteBars <-chan stream.Bar) {
-// 	for {
-// 		select {
-// 		case bar := <-minuteBars:
-// 			symbol := symbols[bar.Symbol]
-// 			symbol.LastPrice = (bar.High + bar.Low) / 2
-// 			trySend(symbol.MinuteBars, bar)
-
-// 			time.Sleep(1 * time.Millisecond)
-
-// 			// evaluate entry and exit conditions
-// 			if portfolio.TradingBlocked() {
-// 				continue
-// 			}
-// 			inPosition := portfolio.InPosition(bar.Symbol, bar.Timestamp)
-
-// 			if inPosition {
-// 				position, _ := portfolio.GetPosition(bar.Symbol, bar.Timestamp)
-// 				if symbol.LastPrice < position.StopPrice {
-// 					portfolio.ExitPosition(bar.Symbol, bar.Timestamp, symbol.LastPrice)
-// 					continue
-// 				} else {
-// 					// update stop price
-// 					newStopPrice := symbol.LastPrice - symbol.Metrics.ATR*1.5
-// 					if newStopPrice > position.StopPrice {
-// 						portfolio.UpdateStopPrice(bar.Symbol, bar.Timestamp, newStopPrice)
-// 					}
-// 				}
-// 			}
-
-// 			entryCondition := symbol.LastPrice > symbol.Metrics.SMA20 && symbol.Metrics.MACD > symbol.Metrics.MACDSignal && symbol.Metrics.StochK > symbol.Metrics.StochD && symbol.Metrics.Volume5m > 1000 && symbol.Metrics.RSI > 70
-// 			if !entryCondition {
-// 				continue
-// 			}
-
-// 			stopPrice := symbol.LastPrice - symbol.Metrics.ATR*1.5
-// 			quantity := uint(portfolio.Equity / symbol.LastPrice * 0.8)
-// 			portfolio.EnterPosition(bar.Symbol, bar.Timestamp, symbol.LastPrice, quantity, stopPrice)
-
-// 		case <-time.After(2 * time.Second):
-// 			fmt.Println("No new bars received in the last 2 seconds. Exiting.")
-// 			portfolio.GenerateReport()
-// 			return
-// 		}
-// 	}
-// }
-
-// func trySend[T any](c chan T, v T) {
-// 	select {
-// 	case c <- v:
-// 	default:
-// 		// channel is full, drain one item to make space
-// 		<-c
-// 		c <- v
-// 	}
-// }
