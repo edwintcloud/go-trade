@@ -2,11 +2,11 @@ package domain
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/edwintcloud/go-trade/internal/markethours"
-	"github.com/labstack/gommon/log"
 )
 
 // TODO: should subscribe to quotes for open positions to check for stop loss hits and update equity in real time
@@ -23,10 +23,10 @@ type Trade struct {
 type Portfolio struct {
 	startingEquity map[string]float64 // day -> starting equity
 	currentEquity  float64
-	openTrades     map[string]*Trade   // symbol -> open trade
+	openTrades     map[string]*Trade  // symbol -> open trade
 	closedTrades   map[string][]Trade // day -> closed trades
 	mu             sync.Mutex
-	tradingBlocked   bool
+	tradingBlocked bool
 }
 
 func NewPortfolio(date time.Time, equity float64) *Portfolio {
@@ -34,9 +34,9 @@ func NewPortfolio(date time.Time, equity float64) *Portfolio {
 	dayKey := date.In(markethours.Location).Format("2006-01-02")
 	return &Portfolio{
 		startingEquity: map[string]float64{dayKey: equity},
-		currentEquity: equity,
-		openTrades: make(map[string]*Trade),
-		closedTrades: make(map[string][]Trade),
+		currentEquity:  equity,
+		openTrades:     make(map[string]*Trade),
+		closedTrades:   make(map[string][]Trade),
 	}
 }
 
@@ -48,15 +48,21 @@ func (p *Portfolio) hasOpenTrade(symbol string) bool {
 func (p *Portfolio) EnterTrade(symbol string, entryTimestamp time.Time, entryPrice float64, quantity uint, stopPrice float64) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.tradingBlocked {
+		return false
+	}
 	if p.hasOpenTrade(symbol) {
 		return false
 	}
+	if _, exists := p.startingEquity[entryTimestamp.Format("2006-01-02")]; !exists {
+		p.startingEquity[entryTimestamp.Format("2006-01-02")] = p.currentEquity
+	}
 	p.openTrades[symbol] = &Trade{
-		Symbol: symbol,
+		Symbol:         symbol,
 		EntryTimestamp: entryTimestamp.In(markethours.Location),
-		EntryPrice: entryPrice,
-		Quantity: quantity,
-		StopPrice: stopPrice,
+		EntryPrice:     entryPrice,
+		Quantity:       quantity,
+		StopPrice:      stopPrice,
 	}
 	p.currentEquity -= float64(quantity) * entryPrice
 	return true
@@ -65,6 +71,9 @@ func (p *Portfolio) EnterTrade(symbol string, entryTimestamp time.Time, entryPri
 func (p *Portfolio) ExitTrade(symbol string, exitTimestamp time.Time, exitPrice float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.tradingBlocked {
+		return
+	}
 	dateKey := exitTimestamp.Format("2006-01-02")
 	if !p.hasOpenTrade(symbol) {
 		return
@@ -75,6 +84,9 @@ func (p *Portfolio) ExitTrade(symbol string, exitTimestamp time.Time, exitPrice 
 	p.closedTrades[dateKey] = append(p.closedTrades[dateKey], *trade)
 	delete(p.openTrades, symbol)
 	p.currentEquity += float64(trade.Quantity) * exitPrice
+	if p.currentEquity <= 0 || p.currentEquity/p.startingEquity[dateKey] <= 0.5 || len(p.closedTrades[dateKey]) >= 5 {
+		p.tradingBlocked = true
+	}
 }
 
 func (p *Portfolio) HasOpenTrade(symbol string, timestamp time.Time) bool {
@@ -134,38 +146,52 @@ func (p *Portfolio) calculateWinRate() float64 {
 	return float64(winCount) / float64(totalCount)
 }
 
-func (p *Portfolio) GenerateReport(timestamp time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	dateKey := timestamp.Format("2006-01-02")
-	startingEquity := p.startingEquity[dateKey]
-	if startingEquity == 0 {
-		log.Errorf("No starting equity found for date %s", dateKey)
+func (p *Portfolio) generateDailyReport(date string) {
+	trades, exists := p.closedTrades[date]
+	if !exists {
+		fmt.Printf("No trades for %s\n", date)
+		return
 	}
-	fmt.Printf("\nFinal Equity: $%.2f\n", startingEquity)
-	fmt.Printf("Total P/L: $%.2f\n", p.currentEquity-startingEquity)
-	fmt.Printf("Return: %.2f%%\n", (p.currentEquity-startingEquity)/startingEquity*100)
-	fmt.Printf("Winrate: %.2f%%\n", p.calculateWinRate()*100)
-	fmt.Println("Positions:")
-	for date, trades := range p.closedTrades {
-		for _, trade := range trades {
-			if trade.ExitTimestamp.IsZero() {
-				fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: OPEN, Qty: %d\n",
-					date, trade.Symbol,
-					trade.EntryTimestamp.In(markethours.Location).Format("15:04"), trade.EntryPrice,
-					trade.Quantity)
-				continue
-			}
-
+	startingEquity := p.startingEquity[date]
+	endingEquity := startingEquity
+	for _, trade := range trades {
+		if !trade.ExitTimestamp.IsZero() {
 			profitLoss := float64(trade.Quantity) * (trade.ExitPrice - trade.EntryPrice)
-			fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f\n",
-				date, trade.Symbol,
-				trade.EntryTimestamp.In(markethours.Location).Format("15:04"), trade.EntryPrice,
-				trade.ExitTimestamp.In(markethours.Location).Format("15:04"), trade.ExitPrice,
-				trade.Quantity, profitLoss)
+			endingEquity += profitLoss
 		}
 	}
-	fmt.Println()
+	fmt.Printf("Date: %s, Starting Equity: $%.2f, Ending Equity: $%.2f, Total P/L: $%.2f, Return: %.2f%%, Winrate: %.2f%%\n",
+		date, startingEquity, endingEquity, endingEquity-startingEquity, (endingEquity-startingEquity)/startingEquity*100, p.calculateWinRate()*100)
+	for _, trade := range trades {
+		exitTime := "OPEN"
+		if !trade.ExitTimestamp.IsZero() {
+			exitTime = trade.ExitTimestamp.In(markethours.Location).Format("15:04")
+		}
+		profitLoss := float64(trade.Quantity) * (trade.ExitPrice - trade.EntryPrice)
+		fmt.Printf("\t%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f\n",
+			date, trade.Symbol,
+			trade.EntryTimestamp.In(markethours.Location).Format("15:04"), trade.EntryPrice,
+			exitTime, trade.ExitPrice,
+			trade.Quantity, profitLoss)
+	}
+}
+
+func (p *Portfolio) GenerateReport() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	dates := make([]string, 0, len(p.closedTrades))
+	for date := range p.closedTrades {
+		dates = append(dates, date)
+	}
+	// sort dates
+	sort.Strings(dates)
+
+	for _, dateKey := range dates {
+		fmt.Println()
+		p.generateDailyReport(dateKey)
+		fmt.Println()
+	}
 }
 
 func (p *Portfolio) SetTradingBlocked() {

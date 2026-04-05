@@ -42,7 +42,7 @@ func BacktestCommand() *cobra.Command {
 	cmd.Flags().String("start", time.Now().In(markethours.Location).Format("2006-01-02"), "start date for backtest in YYYY-MM-DD format")
 	cmd.Flags().String("end", time.Now().In(markethours.Location).Format("2006-01-02"), "end date for backtest in YYYY-MM-DD format")
 	cmd.Flags().Float64("starting-equity", 25000.0, "starting equity for backtest")
-	cmd.Flags().String("symbols", "PENG", "comma separated list of symbols to include in backtest, all symbols will be included if not specified")
+	cmd.Flags().String("symbols", "*", "comma separated list of symbols to include in backtest, all symbols will be included if not specified")
 	return cmd
 }
 
@@ -74,40 +74,60 @@ func runBacktest(startTime time.Time, endTime time.Time, startingEquity float64,
 	}
 	symbols := domain.NewSymbols(symbolList)
 
-	// stream minute bars
-	var err error
+	// start scanner before historical loading so fetching and scanning can overlap.
 	minuteBars := make(chan domain.Bar, config.ChannelBufferSize)
-
-	err = client.StreamHistoricalMinuteBars(ctx, symbolList, startTime, endTime, minuteBars)
-	if err != nil {
-		log.Errorf("Error streaming minute bars: %v", err)
-		return
-	}
-
-	// start scanner
 	candidates := make(chan domain.Candidate, config.ChannelBufferSize)
 	scanner := scanner.NewScanner(config, state, symbols, portfolio)
 
-	err = scanner.Start(ctx, minuteBars, candidates)
+	done, err := scanner.Start(ctx, minuteBars, candidates)
 	if err != nil {
 		log.Errorf("Error starting scanner: %v", err)
 		return
 	}
 
+	applyCandidate := func(candidate domain.Candidate) {
+		entryTime := candidate.Timestamp
+		proposedQuantity := portfolio.GetCurrentEquity() / candidate.LastPrice * 0.8
+		stopPrice := max(candidate.LastPrice*0.95, candidate.LastPrice-candidate.Metrics.ATR*2)
+		if !portfolio.HasOpenTrade(candidate.Symbol, entryTime) {
+			portfolio.EnterTrade(candidate.Symbol, entryTime, candidate.LastPrice, uint(proposedQuantity), stopPrice)
+		}
+	}
+
+	historyErrCh := make(chan error, 1)
+	go func() {
+		historyErrCh <- client.StreamHistoricalMinuteBars(ctx, symbolList, startTime, endTime, minuteBars)
+	}()
+
 	for {
 		select {
 		case candidate := <-candidates:
-			entryTime := candidate.Timestamp
-			proposedQuantity := portfolio.GetCurrentEquity() / candidate.LastPrice * 0.8
-			stopPrice := max(candidate.LastPrice*0.95, candidate.LastPrice-candidate.Metrics.ATR*2)
-			if !portfolio.HasOpenTrade(candidate.Symbol, entryTime) {
-				portfolio.EnterTrade(candidate.Symbol, entryTime, candidate.LastPrice, uint(proposedQuantity), stopPrice)
+			applyCandidate(candidate)
+		case err := <-historyErrCh:
+			historyErrCh = nil
+			if err != nil {
+				log.Errorf("Error streaming minute bars: %v", err)
+				return
+			}
+		case <-done:
+			if historyErrCh != nil {
+				if err := <-historyErrCh; err != nil {
+					log.Errorf("Error streaming minute bars: %v", err)
+					return
+				}
+				historyErrCh = nil
+			}
+			for {
+				select {
+				case candidate := <-candidates:
+					applyCandidate(candidate)
+				default:
+					portfolio.GenerateReport()
+					return
+				}
 			}
 		case <-ctx.Done():
-			return
-		case <-time.After(30 * time.Second):
-			log.Info("Stopping scanner after 30 seconds")
-			portfolio.GenerateReport(startTime)
+			portfolio.GenerateReport()
 			return
 		}
 	}
