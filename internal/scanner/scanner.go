@@ -36,28 +36,22 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 
 		flushBatch := func(batch []pendingBar) bool {
 			for _, pending := range batch {
+				if s.state.IsPaused(pending.bar.Timestamp) ||
+					!markethours.IsMarketOpen(pending.bar.Timestamp) {
+					continue
+				}
+
 				metrics := pending.symbol.GetMetrics()
 				lastPrice := pending.symbol.GetLastPrice()
 
-				if s.state.Portfolio.IsTradingBlocked() || s.state.IsPaused() {
+				// Update portfolio first incase we need to exit a position before evaluating new candidates.
+				// This ensures we have the most up-to-date information on open trades, which may impact whether
+				// we emit a new candidate for the same symbol.
+				if s.state.Portfolio.HasOpenTrade(pending.symbol.Name, pending.bar.Timestamp) {
+					s.state.Portfolio.UpdateOpenTrade(pending.symbol.Name, lastPrice, metrics, pending.bar.Timestamp)
 					continue
 				}
 
-				if s.state.Portfolio.HasOpenTrade(pending.bar.Symbol, pending.bar.Timestamp) {
-					position, _ := s.state.Portfolio.GetTrade(pending.bar.Symbol, pending.bar.Timestamp)
-					if lastPrice < position.StopPrice {
-						s.state.Portfolio.ExitTrade(pending.bar.Symbol, pending.bar.Timestamp, lastPrice)
-						continue
-					}
-					newStopPrice := max(lastPrice*0.95, lastPrice-metrics.ATR*2)
-					if newStopPrice > position.StopPrice {
-						s.state.Portfolio.UpdateStopPrice(pending.bar.Symbol, newStopPrice)
-					}
-				}
-
-				if !markethours.IsRegularSession(pending.bar.Timestamp) {
-					continue
-				}
 				shouldEmit, _ := s.evaluate(pending.symbol.Name, metrics, lastPrice)
 				if !shouldEmit {
 					continue
@@ -112,7 +106,7 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 				continue
 			}
 
-			symbol.SetLastPrice((bar.High + bar.Low) / 2)
+			symbol.SetLastPrice(bar.Close)
 			symbol.AddBar(bar)
 			s.state.Symbols.UpdateVolumeLeaders(symbol.Name, symbol.GetDailyVolume(), bar.Timestamp)
 			batch = append(batch, pendingBar{bar: bar, symbol: symbol})
@@ -123,28 +117,37 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 }
 
 func (s *Scanner) evaluate(symbolName string, metrics domain.Metrics, lastPrice float64) (bool, string) {
-	if lastPrice == 0 || metrics.ATR == 0 || metrics.SMA20 == 0 || metrics.MACD == 0 || metrics.MACDSignal == 0 || metrics.StochK == 0 || metrics.StochD == 0 || metrics.Volume5m == 0 || metrics.RSI == 0 {
+	if lastPrice == 0 || metrics.ATR == 0 || metrics.EMA20 == 0 || metrics.MACD == 0 || metrics.MACDSignal == 0 || metrics.Volume5m == 0 || metrics.RSI == 0 {
 		return false, "not-enough-data"
+	}
+
+	if lastPrice > s.config.MaxPrice || lastPrice < s.config.MinPrice {
+		return false, "price-out-of-range"
 	}
 
 	if !s.state.Symbols.IsSymbolVolumeLeader(symbolName) {
 		return false, "not-volume-leader"
 	}
 
-	if lastPrice <= metrics.SMA20 {
-		return false, "price-below-sma20"
+	if lastPrice <= metrics.EMA20 {
+		return false, "price-below-moving-average"
 	}
+
 	if metrics.MACD <= metrics.MACDSignal {
 		return false, "macd-below-signal"
 	}
-	if metrics.StochK <= metrics.StochD {
-		return false, "stoch-k-below-d"
+
+	if metrics.RSI > 60 || metrics.RSI < 30 {
+		return false, "rsi-out-of-range"
 	}
-	if metrics.Volume5m <= 1000 {
-		return false, "low-volume"
+
+	if metrics.EMA20Roc < 0.003 {
+		// log.Infof("EMA20 ROC below 0 for %s: %.2f", symbolName, metrics.EMA20Roc)
+		return false, "ema-roc-below-threshold"
 	}
-	if metrics.RSI <= 70 {
-		return false, "rsi-not-overbought"
+
+	if lastPrice-metrics.EMA20 > metrics.ATR {
+		return false, "price-too-far-above-ema"
 	}
 
 	return true, ""

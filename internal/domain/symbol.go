@@ -26,7 +26,7 @@ type Symbol struct {
 func NewSymbol(name string) *Symbol {
 	s := &Symbol{
 		Name: name,
-		bars: make(chan Bar, 240),
+		bars: make(chan Bar, 1000),
 	}
 	s.cond = sync.NewCond(&s.mu)
 	s.initializeMetrics()
@@ -89,28 +89,22 @@ func (s *Symbol) updateDailyVolume(currentTime time.Time, barVolume uint64) {
 
 func (s *Symbol) initializeMetrics() {
 	macdBars := make(chan Bar)
-	stochHighBars := make(chan Bar)
-	stochLowBars := make(chan Bar)
-	stochCloseBars := make(chan Bar)
 	atrHighBars := make(chan Bar)
 	atrLowBars := make(chan Bar)
 	atrCloseBars := make(chan Bar)
 	volumeBars := make(chan Bar)
 	rsiBars := make(chan Bar)
-	sma20Bars := make(chan Bar)
+	emaBars := make(chan Bar)
 
 	go func() {
 		for bar := range s.bars {
 			macdBars <- bar
-			stochHighBars <- bar
-			stochLowBars <- bar
-			stochCloseBars <- bar
 			atrHighBars <- bar
 			atrLowBars <- bar
 			atrCloseBars <- bar
 			volumeBars <- bar
 			rsiBars <- bar
-			sma20Bars <- bar
+			emaBars <- bar
 
 			s.mu.Lock()
 			if s.pendingBars > 0 {
@@ -124,17 +118,6 @@ func (s *Symbol) initializeMetrics() {
 	// macd
 	closesMacd := helper.Map(macdBars, func(b Bar) float64 { return b.Close })
 	macdLine, macdSignal := trend.NewMacdWithPeriod[float64](24, 52, 18).Compute(closesMacd)
-
-	// stoch
-	highsStoch := helper.Map(stochHighBars, func(b Bar) float64 { return b.High })
-	lowsStoch := helper.Map(stochLowBars, func(b Bar) float64 { return b.Low })
-	closesStoch := helper.Map(stochCloseBars, func(b Bar) float64 { return b.Close })
-	stoch := &momentum.StochasticOscillator[float64]{
-		Max: trend.NewMovingMaxWithPeriod[float64](10),
-		Min: trend.NewMovingMinWithPeriod[float64](10),
-		Sma: trend.NewSmaWithPeriod[float64](10),
-	}
-	stochK, stochD := stoch.Compute(highsStoch, lowsStoch, closesStoch)
 
 	// atr
 	highsAtr := helper.Map(atrHighBars, func(b Bar) float64 { return b.High })
@@ -150,21 +133,19 @@ func (s *Symbol) initializeMetrics() {
 	closesRsi := helper.Map(rsiBars, func(b Bar) float64 { return b.Close })
 	rsi := momentum.NewRsiWithPeriod[float64](14).Compute(closesRsi)
 
-	// sma20
-	closesSma20 := helper.Map(sma20Bars, func(b Bar) float64 { return b.Close })
-	sma20 := trend.NewSmaWithPeriod[float64](20).Compute(closesSma20)
+	// EMA20
+	closesEma := helper.Map(emaBars, func(b Bar) float64 { return b.Close })
+	emaStreams := helper.Duplicate(trend.NewEmaWithPeriod[float64](20).Compute(closesEma), 2)
+	ema := emaStreams[0]
+
+	// EMA20 ROC
+	emaRoc := trend.NewRocWithPeriod[float64](5).Compute(emaStreams[1])
 
 	s.consumeMetric(macdLine, func(v float64) {
 		s.metrics.MACD = v
 	})
 	s.consumeMetric(macdSignal, func(v float64) {
 		s.metrics.MACDSignal = v
-	})
-	s.consumeMetric(stochK, func(v float64) {
-		s.metrics.StochK = v
-	})
-	s.consumeMetric(stochD, func(v float64) {
-		s.metrics.StochD = v
 	})
 	s.consumeMetric(atr, func(v float64) {
 		s.metrics.ATR = v
@@ -175,8 +156,11 @@ func (s *Symbol) initializeMetrics() {
 	s.consumeMetric(rsi, func(v float64) {
 		s.metrics.RSI = v
 	})
-	s.consumeMetric(sma20, func(v float64) {
-		s.metrics.SMA20 = v
+	s.consumeMetric(ema, func(v float64) {
+		s.metrics.EMA20 = v
+	})
+	s.consumeMetric(emaRoc, func(v float64) {
+		s.metrics.EMA20Roc = v
 	})
 }
 

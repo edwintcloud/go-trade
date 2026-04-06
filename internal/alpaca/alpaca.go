@@ -19,7 +19,7 @@ type Client struct {
 
 func NewClient(config *config.Config) *Client {
 	return &Client{
-		config:      config,
+		config: config,
 		tradeClient: alpaca.NewClient(alpaca.ClientOpts{
 			APIKey:    config.AlpacaAPIKey,
 			APISecret: config.AlpacaAPISecret,
@@ -35,4 +35,3 @@ func NewClient(config *config.Config) *Client {
 		),
 	}
 }
-

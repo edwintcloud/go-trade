@@ -9,6 +9,11 @@ import (
 
 const volumeLeaderCount = 10
 
+type SymbolVolumeMapping struct {
+	SymbolName string
+	Volume     uint64
+}
+
 type Symbols struct {
 	mapping          map[string]*Symbol
 	volumeLeaders    map[string]bool

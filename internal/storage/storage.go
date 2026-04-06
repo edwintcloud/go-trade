@@ -1,6 +1,7 @@
 package storage
 
 type StorageType int
+
 const (
 	StorageTypeFile StorageType = iota
 	StorageTypeMemory

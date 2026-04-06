@@ -18,10 +18,25 @@ import (
 func parseDate(value string) time.Time {
 	dt, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(value), markethours.Location)
 	if err != nil {
-		log.Warnf("Invalid date format, using default of now: %v", err)
-		return time.Now()
+		defaultDate := getDefaultDate()
+		log.Warnf("Invalid date format, using default of %s: %v", defaultDate, err)
+		dt, _ = time.ParseInLocation(defaultDate, "2006-01-02", markethours.Location)
 	}
 	return dt
+}
+
+func getDefaultDate() string {
+	// defaults to last market day
+	now := time.Now()
+	result := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, markethours.Location)
+	switch now.Weekday() {
+	case time.Monday:
+		return result.AddDate(0, 0, -3).Format("2006-01-02")
+	case time.Sunday:
+		return result.AddDate(0, 0, -2).Format("2006-01-02")
+	default:
+		return result.AddDate(0, 0, -1).Format("2006-01-02")
+	}
 }
 
 func BacktestCommand() *cobra.Command {
@@ -35,12 +50,18 @@ func BacktestCommand() *cobra.Command {
 			symbols, _ := cmd.Flags().GetString("symbols")
 
 			startTime := parseDate(startDate).Add(4 * time.Hour)
-			endTime := parseDate(endDate).Add(20 * time.Hour)
+			var endTime time.Time
+			if endDate == "" {
+				endTime = startTime.Add(16 * time.Hour)
+			} else {
+				endTime = parseDate(endDate).Add(20 * time.Hour)
+			}
 			runBacktest(startTime, endTime, startingEquity, symbols)
 		},
 	}
-	cmd.Flags().String("start", time.Now().In(markethours.Location).Format("2006-01-02"), "start date for backtest in YYYY-MM-DD format")
-	cmd.Flags().String("end", time.Now().In(markethours.Location).Format("2006-01-02"), "end date for backtest in YYYY-MM-DD format")
+
+	cmd.Flags().String("start", getDefaultDate(), "start date for backtest in YYYY-MM-DD format")
+	cmd.Flags().String("end", "", "end date for backtest in YYYY-MM-DD format")
 	cmd.Flags().Float64("starting-equity", 25000.0, "starting equity for backtest")
 	cmd.Flags().String("symbols", "*", "comma separated list of symbols to include in backtest, all symbols will be included if not specified")
 	return cmd
@@ -54,8 +75,6 @@ func runBacktest(startTime time.Time, endTime time.Time, startingEquity float64,
 
 	config := config.LoadConfig()
 
-	portfolio := domain.NewPortfolio(startTime, startingEquity)
-
 	client := alpaca.NewClient(config)
 
 	// determine symbols to backtest
@@ -67,14 +86,14 @@ func runBacktest(startTime time.Time, endTime time.Time, startingEquity float64,
 			return
 		}
 		symbolList = equitySymbols
+		log.Infof("Backtesting with %d symbols", len(symbolList))
 	} else {
 		symbolList = strings.Split(symbolsStr, ",")
 		log.Infof("Backtesting with symbols: %v", symbolList)
 	}
-	symbols := domain.NewSymbols(symbolList)
 
-	state := state.NewState(portfolio, symbols)
-
+	state := state.NewState(config, symbolList)
+	state.Portfolio.SetStartingEquity(startTime, startingEquity)
 
 	// start scanner before historical loading so fetching and scanning can overlap.
 	minuteBars := make(chan domain.Bar, config.ChannelBufferSize)
@@ -88,12 +107,7 @@ func runBacktest(startTime time.Time, endTime time.Time, startingEquity float64,
 	}
 
 	applyCandidate := func(candidate domain.Candidate) {
-		entryTime := candidate.Timestamp
-		proposedQuantity := portfolio.GetCurrentEquity() / candidate.LastPrice * 0.8
-		stopPrice := max(candidate.LastPrice*0.95, candidate.LastPrice-candidate.Metrics.ATR*2)
-		if !portfolio.HasOpenTrade(candidate.Symbol, entryTime) {
-			portfolio.EnterTrade(candidate.Symbol, entryTime, candidate.LastPrice, uint(proposedQuantity), stopPrice)
-		}
+		state.Portfolio.TryEnterTrade(candidate.Symbol, candidate.Timestamp, candidate.LastPrice, candidate.Metrics)
 	}
 
 	historyErrCh := make(chan error, 1)
@@ -124,12 +138,12 @@ func runBacktest(startTime time.Time, endTime time.Time, startingEquity float64,
 				case candidate := <-candidates:
 					applyCandidate(candidate)
 				default:
-					portfolio.GenerateReport()
+					state.Portfolio.GenerateReport()
 					return
 				}
 			}
 		case <-ctx.Done():
-			portfolio.GenerateReport()
+			state.Portfolio.GenerateReport()
 			return
 		}
 	}
