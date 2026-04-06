@@ -29,6 +29,7 @@ type Config struct {
 	// Scanning parameters
 	MaxPrice float64
 	MinPrice float64
+	MaxAtrp  float64
 	// Execution parameters
 	LimitOrderSlippageDollars float64
 	MaxSpreadPct              float64
@@ -53,6 +54,7 @@ func LoadConfig() *Config {
 		DailyProfitTargetPct:      0.05,
 		MaxPrice:                  40.0,
 		MinPrice:                  3.5,
+		MaxAtrp:                   0.04,
 		LimitOrderSlippageDollars: 0.1,
 		MaxSpreadPct:              0.05,
 	}

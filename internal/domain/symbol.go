@@ -126,6 +126,9 @@ func (s *Symbol) initializeMetrics() {
 	// macd
 	closesMacd := helper.Map(macdBars, func(b Bar) float64 { return b.Close })
 	macdLine, macdSignal := trend.NewMacdWithPeriod[float64](24, 52, 18).Compute(closesMacd)
+	macdStreams := helper.Duplicate(macdLine, 2)
+	macdLine = macdStreams[0]
+	macdRoc := trend.NewRocWithPeriod[float64](5).Compute(macdStreams[1])
 
 	// atr
 	highsAtr := helper.Map(atrHighBars, func(b Bar) float64 { return b.High })
@@ -145,12 +148,13 @@ func (s *Symbol) initializeMetrics() {
 	closesEma := helper.Map(emaBars, func(b Bar) float64 { return b.Close })
 	emaStreams := helper.Duplicate(trend.NewEmaWithPeriod[float64](20).Compute(closesEma), 2)
 	ema := emaStreams[0]
-
-	// EMA20 ROC
 	emaRoc := trend.NewRocWithPeriod[float64](5).Compute(emaStreams[1])
 
 	s.consumeMetric(macdLine, func(v float64) {
 		s.metrics.MACD = v
+	})
+	s.consumeMetric(macdRoc, func(v float64) {
+		s.metrics.MACDRoc = v
 	})
 	s.consumeMetric(macdSignal, func(v float64) {
 		s.metrics.MACDSignal = v

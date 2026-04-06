@@ -166,17 +166,25 @@ func (s *Scanner) evaluate(symbolName string, metrics domain.Metrics, lastPrice 
 		return false, "macd-below-signal"
 	}
 
-	if metrics.RSI > 60 || metrics.RSI < 30 {
+	if metrics.RSI > 80 || metrics.RSI < 30 {
 		return false, "rsi-out-of-range"
 	}
 
 	if metrics.EMA20Roc < 0.003 {
 		// log.Infof("EMA20 ROC below 0 for %s: %.2f", symbolName, metrics.EMA20Roc)
-		return false, "ema-roc-below-threshold"
+		return false, "ema-not-rising-strongly"
 	}
 
 	if lastPrice-metrics.EMA20 > metrics.ATR {
 		return false, "price-too-far-above-ema"
+	}
+
+	if metrics.ATR/lastPrice > s.config.MaxAtrp {
+		return false, "atrp-above-threshold"
+	}
+
+	if metrics.MACDRoc <= 0 {
+		return false, "macd-negative-roc"
 	}
 
 	return true, ""

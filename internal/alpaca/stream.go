@@ -2,7 +2,6 @@ package alpaca
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
@@ -61,7 +60,6 @@ func (c *Client) StreamLiveMinuteBars(ctx context.Context, symbols []string, out
 			}
 			batch := symbols[i:end]
 			batchNum := i/c.config.SubscribeBatchSize + 1
-			fmt.Println(batch)
 			if err := streamClient.SubscribeToBars(onBar, batch...); err != nil {
 				c.streamClient = newStocksStreamClient(c.config)
 				c.streamConnected.Store(false)
