@@ -34,6 +34,8 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.AddCommand(BacktestCommand())
 	rootCmd.PersistentFlags().StringVarP(&logLevel, "log-level", "l", "info", "Set log level (debug, info, warn, error)")
+
+	rootCmd.AddCommand(BacktestCommand())
+	rootCmd.AddCommand(LiveCommand())
 }

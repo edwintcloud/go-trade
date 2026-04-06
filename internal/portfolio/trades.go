@@ -3,6 +3,7 @@ package portfolio
 import (
 	"time"
 
+	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/edwintcloud/go-trade/internal/domain"
 	"github.com/edwintcloud/go-trade/internal/markethours"
 	"github.com/labstack/gommon/log"
@@ -208,6 +209,15 @@ func (p *Portfolio) TryEnterTrade(symbol string, entryTimestamp time.Time, entry
 		return false
 	}
 
+	// enter trade with broker if available
+	if p.broker != nil {
+		err := p.broker.SubmitOrder(symbol, quantity, alpaca.Buy)
+		if err != nil {
+			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
+			return false
+		}
+	}
+
 	p.openTrades[symbol] = &Trade{
 		Symbol:         symbol,
 		EntryTimestamp: entryTimestamp.In(markethours.Location),
@@ -222,13 +232,24 @@ func (p *Portfolio) TryEnterTrade(symbol string, entryTimestamp time.Time, entry
 }
 
 func (p *Portfolio) exitTrade(symbol string, exitTimestamp time.Time, exitPrice float64) {
-	dateKey := exitTimestamp.Format("2006-01-02")
 	if !p.hasOpenTrade(symbol) {
 		return
 	}
+
 	trade := p.openTrades[symbol]
+
+	// exit trade with broker if available
+	if p.broker != nil {
+		err := p.broker.SubmitOrder(symbol, trade.Quantity, alpaca.Sell)
+		if err != nil {
+			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
+			return
+		}
+	}
+
 	trade.ExitTimestamp = exitTimestamp.In(markethours.Location)
 	trade.ExitPrice = exitPrice
+	dateKey := exitTimestamp.Format("2006-01-02")
 	p.closedTrades[dateKey] = append(p.closedTrades[dateKey], *trade)
 	delete(p.openTrades, symbol)
 }
