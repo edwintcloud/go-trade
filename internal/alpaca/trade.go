@@ -16,6 +16,10 @@ var (
 )
 
 func (c *Client) GetSymbols() ([]string, error) {
+	if cachedSymbols, ok, err := readCache[[]string](symbolsCacheFile, symbolsCacheMaxAge); err == nil && ok {
+		return cachedSymbols, nil
+	}
+
 	assets, err := c.tradeClient.GetAssets(alpaca.GetAssetsRequest{
 		Status:     "active",
 		AssetClass: "us_equity",
@@ -30,6 +34,8 @@ func (c *Client) GetSymbols() ([]string, error) {
 	for i, a := range filtered {
 		result[i] = a.Symbol
 	}
+
+	_ = writeCache(symbolsCacheFile, result)
 
 	return result, nil
 }

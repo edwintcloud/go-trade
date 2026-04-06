@@ -38,6 +38,7 @@ type Config struct {
 	MinTradeCountAccel  float64
 	MinCloseStrength    float64
 	MinVwapPremiumAtr   float64
+	MinVolume5m         float64
 	MaxVwapPremiumAtr   float64
 	// Execution parameters
 	LimitOrderSlippageDollars float64
@@ -55,24 +56,25 @@ func LoadConfig() *Config {
 		SubscribeBatchSize:        500,
 		SubscribeBatchWait:        100 * time.Millisecond,
 		MaxTradesPerDay:           20,
-		MaxLossPerDayPct:          0.1,
+		MaxLossPerDayPct:          0.03,
 		TrailingStopAtrMultiplier: 1.5,
 		TrailingStopPctFallback:   0.05,
 		SameSymbolCooldownMinutes: 30,
 		MinPositionSizePct:        0.3,
-		MinutesUntilBreakEvenStop: 7,
-		DailyProfitTargetPct:      0.05,
-		MaxPrice:                  40.0,
+		MinutesUntilBreakEvenStop: 10,
+		DailyProfitTargetPct:      0.03,
 		MinPrice:                  3.5,
-		MaxAtrp:                   0.04,
+		MaxPrice:                  40.0,
+		MaxAtrp:                   0.03,
 		MinRsi:                    30.0,
-		MaxRsi:                    80.0,
-		MinMacdRoc:                0.003,
-		MinEMA20Roc:               0.003,
-		MinRelativeVolume20:       2,
+		MaxRsi:                    70.0,
+		MinMacdRoc:                0.005,
+		MinEMA20Roc:               0.009,
+		MinRelativeVolume20:       3,
 		MinTradeCountAccel:        2,
-		MinCloseStrength:          0.65,
-		MinVwapPremiumAtr:         0.5,
+		MinCloseStrength:          0,
+		MinVolume5m:               5000,
+		MinVwapPremiumAtr:         -2,
 		MaxVwapPremiumAtr:         3,
 		LimitOrderSlippageDollars: 0.1,
 		MaxSpreadPct:              0.05,

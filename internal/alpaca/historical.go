@@ -15,6 +15,26 @@ const (
 	historicalFetchWorkers      = 4
 )
 
+func (c *Client) FetchHistoricalMinuteBars(symbols []string, request marketdata.GetBarsRequest) (map[string][]marketdata.Bar, error) {
+	cachePath, cachePathErr := historicalBarsCachePath(symbols, request)
+	if cachePathErr == nil {
+		if cachedResults, ok, err := readCache[map[string][]marketdata.Bar](cachePath, 0); err == nil && ok {
+			return cachedResults, nil
+		}
+	}
+
+	results, err := c.dataClient.GetMultiBars(symbols, request)
+	if err != nil {
+		return nil, err
+	}
+
+	if cachePathErr == nil {
+		_ = writeCache(cachePath, results)
+	}
+
+	return results, nil
+}
+
 func (c *Client) StreamHistoricalMinuteBars(ctx context.Context, symbols []string, start, end time.Time, out chan<- domain.Bar) error {
 	defer close(out)
 
@@ -63,7 +83,7 @@ func (c *Client) StreamHistoricalMinuteBars(ctx context.Context, symbols []strin
 				default:
 				}
 
-				results, err := c.dataClient.GetMultiBars(batch, request)
+				results, err := c.FetchHistoricalMinuteBars(batch, request)
 				if err != nil {
 					setErr(err)
 					return

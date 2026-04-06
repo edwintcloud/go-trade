@@ -164,6 +164,10 @@ func (s *Scanner) evaluate(lastPrice float64, metrics domain.Metrics) (bool, str
 		return false, "price-out-of-range"
 	}
 
+	if metrics.Volume5m < s.config.MinVolume5m {
+		return false, "5min-volume-too-low"
+	}
+
 	if lastPrice <= metrics.EMA20 {
 		return false, "price-below-moving-average"
 	}
@@ -172,7 +176,7 @@ func (s *Scanner) evaluate(lastPrice float64, metrics domain.Metrics) (bool, str
 		return false, "macd-below-signal"
 	}
 
-	if metrics.RSI > 80 || metrics.RSI < 30 {
+	if metrics.RSI > s.config.MaxRsi || metrics.RSI < s.config.MinRsi {
 		return false, "rsi-out-of-range"
 	}
 
@@ -196,7 +200,7 @@ func (s *Scanner) evaluate(lastPrice float64, metrics domain.Metrics) (bool, str
 		return false, "ema-not-rising-strongly"
 	}
 
-	if metrics.MACDRoc < s.config.MinEMA20Roc {
+	if metrics.MACDRoc < s.config.MinMacdRoc {
 		return false, "macd-negative-roc"
 	}
 

@@ -197,7 +197,7 @@ func (p *Portfolio) evaluateOpenTradesForAnOpportunitySwap(symbol string, entryT
 	}
 
 	for _, trade := range p.openTrades {
-		if !trade.EntryTimestamp.Before(entryTimestamp) {
+		if !trade.EntryTimestamp.Before(entryTimestamp) || entryTimestamp.Before(trade.EntryTimestamp.Add(10*time.Minute)) {
 			continue
 		}
 
