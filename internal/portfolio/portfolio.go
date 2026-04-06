@@ -6,25 +6,35 @@ import (
 
 	"github.com/edwintcloud/go-trade/internal/alpaca"
 	"github.com/edwintcloud/go-trade/internal/config"
+	"github.com/edwintcloud/go-trade/internal/domain"
 	"github.com/edwintcloud/go-trade/internal/markethours"
+	"github.com/edwintcloud/go-trade/internal/telegram"
 )
 
 type Portfolio struct {
-	config         *config.Config
-	startingEquity map[string]float64 // day -> starting equity
-	openTrades     map[string]*Trade  // symbol -> open trade
-	closedTrades   map[string][]Trade // day -> closed trades
-	mu             sync.RWMutex
-	broker         *alpaca.Client
+	config                       *config.Config
+	startingEquity               map[string]float64        // day -> starting equity
+	openTrades                   map[string]*domain.Trade  // symbol -> open trade
+	closedTrades                 map[string][]domain.Trade // day -> closed trades
+	mu                           sync.RWMutex
+	broker                       *alpaca.Client
+	telegram                     *telegram.TelegramNotifier
+	lastDailySummaryDay          string
+	dailySummarySchedulerStarted bool
 }
 
 func NewPortfolio(config *config.Config) *Portfolio {
+	var telegramNotifier *telegram.TelegramNotifier
+	if config.TelegramBotToken != "" && config.TelegramChatID != "" {
+		telegramNotifier = telegram.NewTelegramNotifier(config)
+	}
 	// TODO: should have some logic here for loading previous equity from file or database, and if not found, use the provided equity as starting equity for the day
 	return &Portfolio{
 		startingEquity: make(map[string]float64),
-		openTrades:     make(map[string]*Trade),
-		closedTrades:   make(map[string][]Trade),
+		openTrades:     make(map[string]*domain.Trade),
+		closedTrades:   make(map[string][]domain.Trade),
 		config:         config,
+		telegram:       telegramNotifier,
 	}
 }
 
@@ -80,6 +90,26 @@ func (p *Portfolio) EnsureStartingEquity(date time.Time) error {
 	}
 	p.mu.Unlock()
 	return nil
+}
+
+func (p *Portfolio) sendDailySummary(date time.Time) bool {
+	if p.telegram == nil {
+		return false
+	}
+	dayKey := date.In(markethours.Location).Format("2006-01-02")
+
+	p.mu.RLock()
+	startingEquity, exists := p.startingEquity[dayKey]
+	if !exists {
+		p.mu.RUnlock()
+		return false
+	}
+	closedTrades := p.closedTrades[dayKey]
+	dayPnL := p.getPnlByDate(date)
+	p.mu.RUnlock()
+
+	p.telegram.NotifyDailySummary(date, startingEquity, dayPnL, len(closedTrades))
+	return true
 }
 
 func (p *Portfolio) lastKnownEquityLocked() float64 {

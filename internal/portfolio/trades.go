@@ -9,21 +9,6 @@ import (
 	"github.com/labstack/gommon/log"
 )
 
-// TODO: should subscribe to quotes for open positions to check for stop loss hits and update equity in real time
-type Trade struct {
-	Symbol         string
-	EntryTimestamp time.Time
-	ExitTimestamp  time.Time
-	EntryPrice     float64
-	EntryMetrics   domain.Metrics
-	CurrentPrice   float64
-	CurrentMetrics domain.Metrics
-	ExitPrice      float64
-	ATR            float64
-	StopPrice      float64
-	Quantity       uint64
-}
-
 func (p *Portfolio) hasOpenTrade(symbol string) bool {
 	_, exists := p.openTrades[symbol]
 	return exists
@@ -243,7 +228,7 @@ func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
 		}
 	}
 
-	p.openTrades[symbol] = &Trade{
+	p.openTrades[symbol] = &domain.Trade{
 		Symbol:         symbol,
 		EntryTimestamp: entryTimestamp.In(markethours.Location),
 		EntryPrice:     entryPrice,
@@ -253,7 +238,19 @@ func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
 		ATR:            metrics.ATR,
 		Quantity:       quantity,
 	}
-	p.updateStopPrice(symbol, entryTimestamp, entryPrice, metrics.ATR)
+
+	stopPrice := p.updateStopPrice(symbol, entryTimestamp, entryPrice, metrics.ATR)
+
+	// send notification for new trade
+	if p.telegram != nil {
+		p.telegram.NotifyTradeOpened(domain.Trade{
+			Symbol:     symbol,
+			Quantity:   quantity,
+			EntryPrice: entryPrice,
+			StopPrice:  stopPrice,
+		})
+	}
+
 	return true
 }
 
@@ -286,20 +283,30 @@ func (p *Portfolio) exitTrade(symbol string, exitTimestamp time.Time, exitPrice 
 		}
 	}
 	p.recordTradeExit(symbol, exitTimestamp, exitPrice)
+
+	// send notification for closed trade
+	if p.telegram != nil {
+		p.telegram.NotifyTradeClosed(domain.Trade{
+			Symbol:    symbol,
+			ExitPrice: exitPrice,
+		})
+	}
 }
 
 func (p *Portfolio) stopPriceFor(lastPrice float64, lastAtr float64) float64 {
 	return max(lastPrice*(1-p.config.TrailingStopPctFallback), lastPrice-lastAtr*p.config.TrailingStopAtrMultiplier)
 }
 
-func (p *Portfolio) updateStopPrice(symbol string, timestamp time.Time, lastPrice float64, lastAtr float64) {
+func (p *Portfolio) updateStopPrice(symbol string, timestamp time.Time, lastPrice float64, lastAtr float64) float64 {
 	newStop := p.stopPriceFor(lastPrice, lastAtr)
 	if p.openTrades[symbol].EntryTimestamp.Add(time.Duration(p.config.MinutesUntilBreakEvenStop) * time.Minute).Before(timestamp.In(markethours.Location)) {
 		newStop = max(newStop, p.openTrades[symbol].EntryPrice)
 	}
 	if newStop > p.openTrades[symbol].StopPrice {
 		p.openTrades[symbol].StopPrice = newStop
+		return newStop
 	}
+	return p.openTrades[symbol].StopPrice
 }
 
 func (p *Portfolio) HasOpenTrade(symbol string, timestamp time.Time) bool {
@@ -356,7 +363,7 @@ func (p *Portfolio) HydrateOpenTradesFromBroker(snapshotTime time.Time) error {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	nextOpenTrades := make(map[string]*Trade, len(positions))
+	nextOpenTrades := make(map[string]*domain.Trade, len(positions))
 	for _, position := range positions {
 		if position.Side == "short" {
 			log.Warnf("Ignoring unsupported short position for %s during broker sync", position.Symbol)
@@ -376,7 +383,7 @@ func (p *Portfolio) HydrateOpenTradesFromBroker(snapshotTime time.Time) error {
 
 		trade, exists := p.openTrades[position.Symbol]
 		if !exists {
-			trade = &Trade{
+			trade = &domain.Trade{
 				Symbol:         position.Symbol,
 				EntryTimestamp: snapshotTime.In(markethours.Location),
 				StopPrice:      p.stopPriceFor(currentPrice, 0),
@@ -465,7 +472,7 @@ func (p *Portfolio) HandleTradeUpdate(update alpaca.TradeUpdate) {
 
 	trade, exists := p.openTrades[position.Symbol]
 	if !exists {
-		trade = &Trade{
+		trade = &domain.Trade{
 			Symbol:         position.Symbol,
 			EntryTimestamp: timestamp,
 			StopPrice:      p.stopPriceFor(currentPrice, 0),

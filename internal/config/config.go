@@ -12,6 +12,8 @@ const (
 type Config struct {
 	AlpacaAPIKey       string
 	AlpacaAPISecret    string
+	TelegramBotToken   string
+	TelegramChatID     string
 	ChannelBufferSize  int
 	PaperBaseURL       string
 	LiveBaseURL        string
@@ -51,6 +53,8 @@ func LoadConfig() *Config {
 	return &Config{
 		AlpacaAPIKey:              os.Getenv("ALPACA_API_KEY"),
 		AlpacaAPISecret:           os.Getenv("ALPACA_API_SECRET"),
+		TelegramBotToken:          os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:            os.Getenv("TELEGRAM_CHAT_ID"),
 		ChannelBufferSize:         DEFAULT_CHANNEL_BUFFER_SIZE,
 		PaperBaseURL:              "https://paper-api.alpaca.markets",
 		LiveBaseURL:               "https://api.alpaca.markets",
