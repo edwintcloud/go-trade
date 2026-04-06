@@ -27,11 +27,11 @@ func (p *Portfolio) calculateWinRate() float64 {
 	return float64(winCount) / float64(totalCount)
 }
 
-func (p *Portfolio) generateDailyReport(date string) {
+func (p *Portfolio) generateDailyReport(date string) float64 {
 	trades, exists := p.closedTrades[date]
 	if !exists {
 		fmt.Printf("No trades for %s\n", date)
-		return
+		return 0.0
 	}
 	startingEquity := p.startingEquity[date]
 	endingEquity := startingEquity
@@ -62,8 +62,11 @@ func (p *Portfolio) generateDailyReport(date string) {
 			vwapPremium)
 	}
 
+	returnPct := (endingEquity - startingEquity) / startingEquity * 100
 	fmt.Printf("\n\t%d trades, Starting Equity: $%.2f, Ending Equity: $%.2f, Total P/L: $%.2f, Return: %.2f%%, Winrate: %.2f%%\n",
-		len(trades), startingEquity, endingEquity, endingEquity-startingEquity, (endingEquity-startingEquity)/startingEquity*100, p.calculateWinRate()*100)
+		len(trades), startingEquity, endingEquity, endingEquity-startingEquity, returnPct, p.calculateWinRate()*100)
+
+	return returnPct
 }
 
 func (p *Portfolio) GenerateReport() {
@@ -77,9 +80,11 @@ func (p *Portfolio) GenerateReport() {
 	// sort dates
 	sort.Strings(dates)
 
+	totalReturnPct := 0.0
 	for _, dateKey := range dates {
 		fmt.Println(strings.Repeat("-", 150))
-		p.generateDailyReport(dateKey)
+		totalReturnPct += p.generateDailyReport(dateKey)
 		fmt.Println(strings.Repeat("=", 150))
 	}
+	fmt.Printf("Overall Return: %.2f%%\n", totalReturnPct)
 }

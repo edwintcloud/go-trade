@@ -212,5 +212,10 @@ func (s *Scanner) evaluate(lastPrice float64, metrics domain.Metrics) (bool, str
 		return false, "price-too-far-below-vwap"
 	}
 
+	emaPremium := (lastPrice - metrics.EMA20) / metrics.ATR
+	if emaPremium > s.config.MaxEmaPremiumAtr {
+		return false, "price-too-far-above-ema"
+	}
+
 	return true, ""
 }

@@ -40,6 +40,7 @@ type Config struct {
 	MinVwapPremiumAtr   float64
 	MinVolume5m         float64
 	MaxVwapPremiumAtr   float64
+	MaxEmaPremiumAtr    float64
 	// Execution parameters
 	LimitOrderSlippageDollars float64
 	MaxSpreadPct              float64
@@ -55,14 +56,14 @@ func LoadConfig() *Config {
 		LiveBaseURL:               "https://api.alpaca.markets",
 		SubscribeBatchSize:        500,
 		SubscribeBatchWait:        100 * time.Millisecond,
-		MaxTradesPerDay:           20,
+		MaxTradesPerDay:           10,
 		MaxLossPerDayPct:          0.03,
 		TrailingStopAtrMultiplier: 1.5,
 		TrailingStopPctFallback:   0.05,
 		SameSymbolCooldownMinutes: 30,
 		MinPositionSizePct:        0.3,
 		MinutesUntilBreakEvenStop: 10,
-		DailyProfitTargetPct:      0.03,
+		DailyProfitTargetPct:      0.1,
 		MinPrice:                  3.5,
 		MaxPrice:                  40.0,
 		MaxAtrp:                   0.03,
@@ -71,11 +72,12 @@ func LoadConfig() *Config {
 		MinMacdRoc:                0.005,
 		MinEMA20Roc:               0.009,
 		MinRelativeVolume20:       3,
-		MinTradeCountAccel:        2,
+		MinTradeCountAccel:        3,
 		MinCloseStrength:          0,
 		MinVolume5m:               5000,
-		MinVwapPremiumAtr:         -2,
+		MinVwapPremiumAtr:         0.5,
 		MaxVwapPremiumAtr:         3,
+		MaxEmaPremiumAtr:          3,
 		LimitOrderSlippageDollars: 0.1,
 		MaxSpreadPct:              0.05,
 		MaxCapitalPerTradePct:     0.5,
