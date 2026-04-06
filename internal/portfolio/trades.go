@@ -15,6 +15,7 @@ type Trade struct {
 	EntryTimestamp time.Time
 	ExitTimestamp  time.Time
 	EntryPrice     float64
+	EntryMetrics   domain.Metrics
 	CurrentPrice   float64
 	CurrentMetrics domain.Metrics
 	ExitPrice      float64
@@ -115,7 +116,7 @@ func (p *Portfolio) availableBuyingPower(date time.Time) float64 {
 	if buyingPower < 0 {
 		return 0
 	}
-	return buyingPower
+	return buyingPower * 0.95 // keep a buffer to avoid margin issues
 }
 
 func (p *Portfolio) determineTradeQuantityWithBuyingPower(entryTimestamp time.Time, price float64, atr float64, buyingPower float64) uint64 {
@@ -134,7 +135,7 @@ func (p *Portfolio) determineTradeQuantityWithBuyingPower(entryTimestamp time.Ti
 		return 0
 	}
 
-	quantity := uint64(buyingPower / price)
+	quantity := uint64(buyingPower / price * p.config.MaxCapitalPerTradePct)
 	if quantity < uint64(p.config.MinPositionSizePct)*uint64(equity/price) {
 		return 0
 	}
@@ -190,21 +191,32 @@ func (p *Portfolio) evaluateOpenTradesForAnOpportunitySwap(symbol string, entryT
 		return
 	}
 
+	quantity := p.determineTradeQuantityWithBuyingPower(entryTimestamp, entryPrice, metrics.ATR, p.availableBuyingPower(entryTimestamp))
+	if float64(quantity)*entryPrice >= p.currentEquity(entryTimestamp)*p.config.MinPositionSizePct*0.9 {
+		return
+	}
+
 	for _, trade := range p.openTrades {
 		if !trade.EntryTimestamp.Before(entryTimestamp) {
 			continue
 		}
 
-		curTradeATRP := trade.CurrentMetrics.ATR / trade.CurrentPrice
-		newTradeATRP := metrics.ATR / entryPrice
-		if curTradeATRP < newTradeATRP {
+		// curTradeATRP := trade.CurrentMetrics.ATR / trade.CurrentPrice
+		// newTradeATRP := metrics.ATR / entryPrice
+		exitCondition := trade.CurrentMetrics.TradeCountAccel < metrics.TradeCountAccel && trade.CurrentMetrics.RelativeVolume20 < metrics.RelativeVolume20
+		if exitCondition {
 			p.exitTrade(trade.Symbol, entryTimestamp, trade.CurrentPrice)
 			return
 		}
 	}
 }
 
-func (p *Portfolio) TryEnterTrade(symbol string, entryTimestamp time.Time, entryPrice float64, metrics domain.Metrics) bool {
+func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
+	symbol := candidate.Symbol
+	entryTimestamp := candidate.Timestamp
+	entryPrice := candidate.LastPrice
+	metrics := candidate.Metrics
+
 	if err := p.EnsureStartingEquity(entryTimestamp); err != nil {
 		log.Errorf("Failed to refresh starting equity for %s: %v", entryTimestamp.In(markethours.Location).Format("2006-01-02"), err)
 		return false
@@ -235,6 +247,7 @@ func (p *Portfolio) TryEnterTrade(symbol string, entryTimestamp time.Time, entry
 		Symbol:         symbol,
 		EntryTimestamp: entryTimestamp.In(markethours.Location),
 		EntryPrice:     entryPrice,
+		EntryMetrics:   metrics,
 		CurrentPrice:   entryPrice,
 		CurrentMetrics: metrics,
 		ATR:            metrics.ATR,

@@ -59,7 +59,7 @@ func runLive() {
 	}
 
 	applyCandidate := func(candidate domain.Candidate) {
-		state.Portfolio.TryEnterTrade(candidate.Symbol, candidate.Timestamp, candidate.LastPrice, candidate.Metrics)
+		state.Portfolio.TryEnterTrade(candidate)
 	}
 
 	historyErrCh := make(chan error, 1)

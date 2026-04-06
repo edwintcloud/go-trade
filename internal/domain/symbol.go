@@ -11,6 +11,24 @@ import (
 	"github.com/edwintcloud/go-trade/internal/markethours"
 )
 
+const recentBarHistorySize = 30
+
+const (
+	breakoutMetricLookback = 5
+	pullbackMetricLookback = 3
+)
+
+type alignedMetricStreams struct {
+	macd       <-chan float64
+	macdRoc    <-chan float64
+	macdSignal <-chan float64
+	atr        <-chan float64
+	volume5m   <-chan float64
+	rsi        <-chan float64
+	ema        <-chan float64
+	emaRoc     <-chan float64
+}
+
 type Symbol struct {
 	Name                    string
 	bars                    chan Bar
@@ -18,6 +36,9 @@ type Symbol struct {
 	lastPrice               float64
 	dailyVolume             uint64
 	dailyVolumeAccStartDate time.Time
+	sessionVolume           float64
+	sessionNotional         float64
+	recentBars              []Bar
 	metricsInitOnce         sync.Once
 	mu                      sync.RWMutex
 	cond                    *sync.Cond
@@ -55,11 +76,21 @@ func (s *Symbol) GetMetrics() Metrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for s.pendingBars > 0 {
-		s.cond.Wait()
-	}
+	s.waitForPendingBarsLocked()
 
-	return s.metrics
+	metrics := s.metrics
+	if s.sessionVolume > 0 {
+		metrics.SessionVWAP = s.sessionNotional / s.sessionVolume
+	}
+	metrics.RelativeVolume20 = s.currentToAverageRatioLocked(20, func(bar Bar) float64 {
+		return float64(bar.Volume)
+	})
+	metrics.TradeCountAccel = s.currentToAverageRatioLocked(20, func(bar Bar) float64 {
+		return float64(bar.TradeCount)
+	})
+	s.populateTriggerMetricsLocked(&metrics)
+
+	return metrics
 }
 
 func (s *Symbol) GetDailyVolume() uint64 {
@@ -72,7 +103,10 @@ func (s *Symbol) AddBar(bar Bar) {
 	s.ensureMetricsInitialized()
 
 	s.mu.Lock()
+	s.rollSessionStateLocked(bar.Timestamp)
 	s.updateDailyVolume(bar.Timestamp, bar.Volume)
+	s.updateSessionVWAPLocked(bar)
+	s.appendRecentBarLocked(bar)
 	select {
 	case s.bars <- bar:
 		s.pendingBars++
@@ -85,6 +119,22 @@ func (s *Symbol) AddBar(bar Bar) {
 	s.mu.Unlock()
 }
 
+func (s *Symbol) waitForPendingBarsLocked() {
+	for s.pendingBars > 0 {
+		s.cond.Wait()
+	}
+}
+
+func (s *Symbol) rollSessionStateLocked(currentTime time.Time) {
+	if markethours.IsSameDay(s.dailyVolumeAccStartDate, currentTime) {
+		return
+	}
+
+	s.sessionVolume = 0
+	s.sessionNotional = 0
+	s.recentBars = s.recentBars[:0]
+}
+
 func (s *Symbol) updateDailyVolume(currentTime time.Time, barVolume uint64) {
 	if !markethours.IsSameDay(s.dailyVolumeAccStartDate, currentTime) {
 		s.dailyVolume = barVolume
@@ -95,6 +145,69 @@ func (s *Symbol) updateDailyVolume(currentTime time.Time, barVolume uint64) {
 	s.dailyVolume += barVolume
 }
 
+func (s *Symbol) updateSessionVWAPLocked(bar Bar) {
+	price := bar.VWAP
+	if price == 0 {
+		price = bar.Close
+	}
+
+	volume := float64(bar.Volume)
+	if volume == 0 {
+		return
+	}
+
+	s.sessionNotional += price * volume
+	s.sessionVolume += volume
+}
+
+func (s *Symbol) appendRecentBarLocked(bar Bar) {
+	s.recentBars = append(s.recentBars, bar)
+	if len(s.recentBars) > recentBarHistorySize {
+		s.recentBars = s.recentBars[len(s.recentBars)-recentBarHistorySize:]
+	}
+}
+
+func (s *Symbol) currentToAverageRatioLocked(lookback int, value func(Bar) float64) float64 {
+	if len(s.recentBars) < 2 {
+		return 0
+	}
+
+	current := value(s.recentBars[len(s.recentBars)-1])
+	sum := 0.0
+	count := 0
+	for i := len(s.recentBars) - 2; i >= 0 && count < lookback; i-- {
+		sum += value(s.recentBars[i])
+		count++
+	}
+
+	if current == 0 || sum == 0 || count == 0 {
+		return 0
+	}
+
+	return current / (sum / float64(count))
+}
+
+func (s *Symbol) populateTriggerMetricsLocked(metrics *Metrics) {
+	if len(s.recentBars) == 0 {
+		return
+	}
+
+	currentBar := s.recentBars[len(s.recentBars)-1]
+	metrics.CloseStrength = candleCloseStrength(currentBar)
+
+	priorBars := s.recentBars[:len(s.recentBars)-1]
+	if len(priorBars) >= breakoutMetricLookback {
+		metrics.BreakoutLevel5 = highestHigh(tailBars(priorBars, breakoutMetricLookback))
+		metrics.BreakoutOpenedBelowLevel = currentBar.Open <= metrics.BreakoutLevel5
+	}
+
+	if len(priorBars) >= pullbackMetricLookback {
+		metrics.PullbackLow3 = lowestLow(tailBars(priorBars, pullbackMetricLookback))
+		metrics.PullbackReclaimLevel = priorBars[len(priorBars)-1].High
+		metrics.PullbackOpenedBelowLevel = currentBar.Open <= metrics.PullbackReclaimLevel
+	}
+}
+
 func (s *Symbol) initializeMetrics() {
 	macdBars := make(chan Bar)
 	atrHighBars := make(chan Bar)
@@ -103,6 +216,7 @@ func (s *Symbol) initializeMetrics() {
 	volumeBars := make(chan Bar)
 	rsiBars := make(chan Bar)
 	emaBars := make(chan Bar)
+	currentBars := make(chan Bar)
 
 	go func() {
 		for bar := range s.bars {
@@ -113,8 +227,98 @@ func (s *Symbol) initializeMetrics() {
 			volumeBars <- bar
 			rsiBars <- bar
 			emaBars <- bar
+			currentBars <- bar
+		}
+	}()
+
+	// macd
+	macdIndicator := trend.NewMacdWithPeriod[float64](24, 52, 18)
+	closesMacd := helper.Map(macdBars, func(b Bar) float64 { return b.Close })
+	macdLineRaw, macdSignalRaw := macdIndicator.Compute(closesMacd)
+	macdStreams := helper.Duplicate(macdLineRaw, 2)
+	macdRocIndicator := trend.NewRocWithPeriod[float64](5)
+
+	// atr
+	atrIndicator := volatility.NewAtrWithPeriod[float64](14)
+	highsAtr := helper.Map(atrHighBars, func(b Bar) float64 { return b.High })
+	lowsAtr := helper.Map(atrLowBars, func(b Bar) float64 { return b.Low })
+	closesAtr := helper.Map(atrCloseBars, func(b Bar) float64 { return b.Close })
+	atrRaw := atrIndicator.Compute(highsAtr, lowsAtr, closesAtr)
+
+	// 5 min volume
+	volume5mIndicator := trend.NewSmaWithPeriod[float64](5)
+	volumes5m := helper.Map(volumeBars, func(b Bar) float64 { return float64(b.Volume) })
+	volume5mRaw := volume5mIndicator.Compute(volumes5m)
+
+	// rsi
+	rsiIndicator := momentum.NewRsiWithPeriod[float64](14)
+	closesRsi := helper.Map(rsiBars, func(b Bar) float64 { return b.Close })
+	rsiRaw := rsiIndicator.Compute(closesRsi)
+
+	// EMA20
+	emaIndicator := trend.NewEmaWithPeriod[float64](20)
+	closesEma := helper.Map(emaBars, func(b Bar) float64 { return b.Close })
+	emaRaw := emaIndicator.Compute(closesEma)
+	emaStreams := helper.Duplicate(emaRaw, 2)
+	emaRocIndicator := trend.NewRocWithPeriod[float64](5)
+
+	s.consumeMetrics(currentBars, alignedMetricStreams{
+		macd:       alignMetricStream(macdStreams[0], macdIndicator.IdlePeriod()),
+		macdRoc:    alignMetricStream(macdRocIndicator.Compute(macdStreams[1]), macdIndicator.IdlePeriod()+macdRocIndicator.IdlePeriod()),
+		macdSignal: alignMetricStream(macdSignalRaw, macdIndicator.IdlePeriod()),
+		atr:        alignMetricStream(atrRaw, atrIndicator.IdlePeriod()),
+		volume5m:   alignMetricStream(volume5mRaw, volume5mIndicator.IdlePeriod()),
+		rsi:        alignMetricStream(rsiRaw, rsiIndicator.IdlePeriod()),
+		ema:        alignMetricStream(emaStreams[0], emaIndicator.IdlePeriod()),
+		emaRoc:     alignMetricStream(emaRocIndicator.Compute(emaStreams[1]), emaIndicator.IdlePeriod()+emaRocIndicator.IdlePeriod()),
+	})
+}
+
+func (s *Symbol) consumeMetrics(currentBars <-chan Bar, streams alignedMetricStreams) {
+	go func() {
+		for range currentBars {
+			macd, ok := <-streams.macd
+			if !ok {
+				return
+			}
+			macdRoc, ok := <-streams.macdRoc
+			if !ok {
+				return
+			}
+			macdSignal, ok := <-streams.macdSignal
+			if !ok {
+				return
+			}
+			atr, ok := <-streams.atr
+			if !ok {
+				return
+			}
+			volume5m, ok := <-streams.volume5m
+			if !ok {
+				return
+			}
+			rsi, ok := <-streams.rsi
+			if !ok {
+				return
+			}
+			ema, ok := <-streams.ema
+			if !ok {
+				return
+			}
+			emaRoc, ok := <-streams.emaRoc
+			if !ok {
+				return
+			}
 
 			s.mu.Lock()
+			s.metrics.MACD = macd
+			s.metrics.MACDRoc = macdRoc
+			s.metrics.MACDSignal = macdSignal
+			s.metrics.ATR = atr
+			s.metrics.Volume5m = volume5m
+			s.metrics.RSI = rsi
+			s.metrics.EMA20 = ema
+			s.metrics.EMA20Roc = emaRoc
 			if s.pendingBars > 0 {
 				s.pendingBars--
 			}
@@ -122,66 +326,69 @@ func (s *Symbol) initializeMetrics() {
 			s.mu.Unlock()
 		}
 	}()
-
-	// macd
-	closesMacd := helper.Map(macdBars, func(b Bar) float64 { return b.Close })
-	macdLine, macdSignal := trend.NewMacdWithPeriod[float64](24, 52, 18).Compute(closesMacd)
-	macdStreams := helper.Duplicate(macdLine, 2)
-	macdLine = macdStreams[0]
-	macdRoc := trend.NewRocWithPeriod[float64](5).Compute(macdStreams[1])
-
-	// atr
-	highsAtr := helper.Map(atrHighBars, func(b Bar) float64 { return b.High })
-	lowsAtr := helper.Map(atrLowBars, func(b Bar) float64 { return b.Low })
-	closesAtr := helper.Map(atrCloseBars, func(b Bar) float64 { return b.Close })
-	atr := volatility.NewAtrWithPeriod[float64](14).Compute(highsAtr, lowsAtr, closesAtr)
-
-	// 5 min volume
-	volumes5m := helper.Map(volumeBars, func(b Bar) float64 { return float64(b.Volume) })
-	volume5m := trend.NewSmaWithPeriod[float64](5).Compute(volumes5m)
-
-	// rsi
-	closesRsi := helper.Map(rsiBars, func(b Bar) float64 { return b.Close })
-	rsi := momentum.NewRsiWithPeriod[float64](14).Compute(closesRsi)
-
-	// EMA20
-	closesEma := helper.Map(emaBars, func(b Bar) float64 { return b.Close })
-	emaStreams := helper.Duplicate(trend.NewEmaWithPeriod[float64](20).Compute(closesEma), 2)
-	ema := emaStreams[0]
-	emaRoc := trend.NewRocWithPeriod[float64](5).Compute(emaStreams[1])
-
-	s.consumeMetric(macdLine, func(v float64) {
-		s.metrics.MACD = v
-	})
-	s.consumeMetric(macdRoc, func(v float64) {
-		s.metrics.MACDRoc = v
-	})
-	s.consumeMetric(macdSignal, func(v float64) {
-		s.metrics.MACDSignal = v
-	})
-	s.consumeMetric(atr, func(v float64) {
-		s.metrics.ATR = v
-	})
-	s.consumeMetric(volume5m, func(v float64) {
-		s.metrics.Volume5m = v
-	})
-	s.consumeMetric(rsi, func(v float64) {
-		s.metrics.RSI = v
-	})
-	s.consumeMetric(ema, func(v float64) {
-		s.metrics.EMA20 = v
-	})
-	s.consumeMetric(emaRoc, func(v float64) {
-		s.metrics.EMA20Roc = v
-	})
 }
 
-func (s *Symbol) consumeMetric(values <-chan float64, assign func(v float64)) {
+func alignMetricStream(values <-chan float64, idleCount int) <-chan float64 {
+	aligned := make(chan float64, cap(values))
+
 	go func() {
-		for v := range values {
-			s.mu.Lock()
-			assign(v)
-			s.mu.Unlock()
+		defer close(aligned)
+
+		for i := 0; i < idleCount; i++ {
+			aligned <- 0
+		}
+
+		for value := range values {
+			aligned <- value
 		}
 	}()
+
+	return aligned
+}
+
+func tailBars(bars []Bar, limit int) []Bar {
+	if limit <= 0 || limit >= len(bars) {
+		return bars
+	}
+
+	return bars[len(bars)-limit:]
+}
+
+func highestHigh(bars []Bar) float64 {
+	high := 0.0
+	for _, bar := range bars {
+		if bar.High > high {
+			high = bar.High
+		}
+	}
+	return high
+}
+
+func lowestLow(bars []Bar) float64 {
+	low := 0.0
+	for i, bar := range bars {
+		if i == 0 || bar.Low < low {
+			low = bar.Low
+		}
+	}
+	return low
+}
+
+func candleCloseStrength(bar Bar) float64 {
+	rangeSize := bar.High - bar.Low
+	if rangeSize <= 0 {
+		return 0
+	}
+
+	return clampFloat((bar.Close-bar.Low)/rangeSize, 0, 1)
+}
+
+func clampFloat(value float64, lower float64, upper float64) float64 {
+	if value < lower {
+		return lower
+	}
+	if value > upper {
+		return upper
+	}
+	return value
 }

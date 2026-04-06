@@ -81,7 +81,7 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 			}
 
 			for _, candidate := range candidates {
-				shouldEmit, _ := s.evaluate(candidate.bar.Symbol, candidate.metrics, candidate.lastPrice)
+				shouldEmit, _ := s.evaluate(candidate.lastPrice, candidate.metrics)
 				if !shouldEmit {
 					continue
 				}
@@ -137,7 +137,6 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 
 			symbol.SetLastPrice(bar.Close)
 			symbol.AddBar(bar)
-			s.state.Symbols.UpdateVolumeLeaders(symbol.Name, symbol.GetDailyVolume(), bar.Timestamp)
 			batch = append(batch, pendingBar{bar: bar, symbol: symbol})
 		}
 	}()
@@ -145,17 +144,24 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 	return done, nil
 }
 
-func (s *Scanner) evaluate(symbolName string, metrics domain.Metrics, lastPrice float64) (bool, string) {
-	if lastPrice == 0 || metrics.ATR == 0 || metrics.EMA20 == 0 || metrics.MACD == 0 || metrics.MACDSignal == 0 || metrics.Volume5m == 0 || metrics.RSI == 0 {
+func (s *Scanner) evaluate(lastPrice float64, metrics domain.Metrics) (bool, string) {
+	if lastPrice == 0 ||
+		metrics.ATR == 0 ||
+		metrics.EMA20 == 0 ||
+		metrics.EMA20Roc == 0 ||
+		metrics.MACD == 0 ||
+		metrics.MACDRoc == 0 ||
+		metrics.MACDSignal == 0 ||
+		metrics.RSI == 0 ||
+		metrics.RelativeVolume20 == 0 ||
+		metrics.TradeCountAccel == 0 ||
+		metrics.CloseStrength == 0 ||
+		metrics.SessionVWAP == 0 {
 		return false, "not-enough-data"
 	}
 
 	if lastPrice > s.config.MaxPrice || lastPrice < s.config.MinPrice {
 		return false, "price-out-of-range"
-	}
-
-	if !s.state.Symbols.IsSymbolVolumeLeader(symbolName) {
-		return false, "not-volume-leader"
 	}
 
 	if lastPrice <= metrics.EMA20 {
@@ -170,21 +176,36 @@ func (s *Scanner) evaluate(symbolName string, metrics domain.Metrics, lastPrice 
 		return false, "rsi-out-of-range"
 	}
 
-	if metrics.EMA20Roc < 0.003 {
-		// log.Infof("EMA20 ROC below 0 for %s: %.2f", symbolName, metrics.EMA20Roc)
-		return false, "ema-not-rising-strongly"
+	if metrics.RelativeVolume20 < s.config.MinRelativeVolume20 {
+		return false, "relative-volume-too-low"
 	}
 
-	if lastPrice-metrics.EMA20 > metrics.ATR {
-		return false, "price-too-far-above-ema"
+	if metrics.TradeCountAccel < s.config.MinTradeCountAccel {
+		return false, "trade-count-not-accelerating"
+	}
+
+	if metrics.CloseStrength < s.config.MinCloseStrength {
+		return false, "weak-close"
 	}
 
 	if metrics.ATR/lastPrice > s.config.MaxAtrp {
 		return false, "atrp-above-threshold"
 	}
 
-	if metrics.MACDRoc <= 0 {
+	if metrics.EMA20Roc < s.config.MinEMA20Roc {
+		return false, "ema-not-rising-strongly"
+	}
+
+	if metrics.MACDRoc < s.config.MinEMA20Roc {
 		return false, "macd-negative-roc"
+	}
+
+	vwapPremium := (lastPrice - metrics.SessionVWAP) / metrics.ATR
+	if vwapPremium > s.config.MaxVwapPremiumAtr {
+		return false, "price-too-far-above-vwap"
+	}
+	if vwapPremium < s.config.MinVwapPremiumAtr {
+		return false, "price-too-far-below-vwap"
 	}
 
 	return true, ""

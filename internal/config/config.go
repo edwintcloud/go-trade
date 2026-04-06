@@ -27,12 +27,22 @@ type Config struct {
 	MinutesUntilBreakEvenStop int
 	DailyProfitTargetPct      float64
 	// Scanning parameters
-	MaxPrice float64
-	MinPrice float64
-	MaxAtrp  float64
+	MaxPrice            float64
+	MinPrice            float64
+	MaxAtrp             float64
+	MinRsi              float64
+	MaxRsi              float64
+	MinMacdRoc          float64
+	MinEMA20Roc         float64
+	MinRelativeVolume20 float64
+	MinTradeCountAccel  float64
+	MinCloseStrength    float64
+	MinVwapPremiumAtr   float64
+	MaxVwapPremiumAtr   float64
 	// Execution parameters
 	LimitOrderSlippageDollars float64
 	MaxSpreadPct              float64
+	MaxCapitalPerTradePct     float64
 }
 
 func LoadConfig() *Config {
@@ -55,7 +65,17 @@ func LoadConfig() *Config {
 		MaxPrice:                  40.0,
 		MinPrice:                  3.5,
 		MaxAtrp:                   0.04,
+		MinRsi:                    30.0,
+		MaxRsi:                    80.0,
+		MinMacdRoc:                0.003,
+		MinEMA20Roc:               0.003,
+		MinRelativeVolume20:       2,
+		MinTradeCountAccel:        2,
+		MinCloseStrength:          0.65,
+		MinVwapPremiumAtr:         0.5,
+		MaxVwapPremiumAtr:         3,
 		LimitOrderSlippageDollars: 0.1,
 		MaxSpreadPct:              0.05,
+		MaxCapitalPerTradePct:     0.5,
 	}
 }

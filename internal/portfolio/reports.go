@@ -3,6 +3,7 @@ package portfolio
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/edwintcloud/go-trade/internal/markethours"
 )
@@ -40,20 +41,29 @@ func (p *Portfolio) generateDailyReport(date string) {
 			endingEquity += profitLoss
 		}
 	}
-	fmt.Printf("Date: %s, Starting Equity: $%.2f, Ending Equity: $%.2f, Total P/L: $%.2f, Return: %.2f%%, Winrate: %.2f%%\n",
-		date, startingEquity, endingEquity, endingEquity-startingEquity, (endingEquity-startingEquity)/startingEquity*100, p.calculateWinRate()*100)
+
 	for _, trade := range trades {
 		exitTime := "OPEN"
 		if !trade.ExitTimestamp.IsZero() {
 			exitTime = trade.ExitTimestamp.In(markethours.Location).Format("15:04")
 		}
 		profitLoss := float64(trade.Quantity) * (trade.ExitPrice - trade.EntryPrice)
-		fmt.Printf("\t%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f\n",
+		vwapPremium := 0.0
+		if trade.EntryMetrics.ATR > 0 && trade.EntryMetrics.SessionVWAP > 0 {
+			vwapPremium = (trade.EntryPrice - trade.EntryMetrics.SessionVWAP) / trade.EntryMetrics.ATR
+		}
+		fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f, RVOL20: %.2fx, TCA: %.2fx, VWAP Premium: %.2f ATR\n",
 			date, trade.Symbol,
 			trade.EntryTimestamp.In(markethours.Location).Format("15:04"), trade.EntryPrice,
 			exitTime, trade.ExitPrice,
-			trade.Quantity, profitLoss)
+			trade.Quantity, profitLoss,
+			trade.EntryMetrics.RelativeVolume20,
+			trade.EntryMetrics.TradeCountAccel,
+			vwapPremium)
 	}
+
+	fmt.Printf("\n\t%d trades, Starting Equity: $%.2f, Ending Equity: $%.2f, Total P/L: $%.2f, Return: %.2f%%, Winrate: %.2f%%\n",
+		len(trades), startingEquity, endingEquity, endingEquity-startingEquity, (endingEquity-startingEquity)/startingEquity*100, p.calculateWinRate()*100)
 }
 
 func (p *Portfolio) GenerateReport() {
@@ -68,8 +78,8 @@ func (p *Portfolio) GenerateReport() {
 	sort.Strings(dates)
 
 	for _, dateKey := range dates {
-		fmt.Println()
+		fmt.Println(strings.Repeat("-", 150))
 		p.generateDailyReport(dateKey)
-		fmt.Println()
+		fmt.Println(strings.Repeat("=", 150))
 	}
 }
