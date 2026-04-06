@@ -31,19 +31,67 @@ func NewPortfolio(config *config.Config) *Portfolio {
 func (p *Portfolio) SetStartingEquity(date time.Time, equity float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	dateKey := date.Format("2006-01-02")
+	dateKey := date.In(markethours.Location).Format("2006-01-02")
 	p.startingEquity[dateKey] = equity
 }
 
 func (p *Portfolio) SetBroker(broker *alpaca.Client) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.broker = broker
+	p.mu.Unlock()
 
-	acct, err := p.broker.GetAccount()
-	if err != nil {
+	now := time.Now().In(markethours.Location)
+	if err := p.EnsureStartingEquity(now); err != nil {
 		panic("failed to get account information from broker: " + err.Error())
 	}
-	p.SetStartingEquity(time.Now().In(markethours.Location), acct.Equity.InexactFloat64())
-	// TODO: set open trades based on broker account information and subscription to real time updates for open positions
+	if err := p.HydrateOpenTradesFromBroker(now); err != nil {
+		panic("failed to hydrate broker positions: " + err.Error())
+	}
+}
+
+func (p *Portfolio) EnsureStartingEquity(date time.Time) error {
+	dayKey := date.In(markethours.Location).Format("2006-01-02")
+
+	p.mu.RLock()
+	_, exists := p.startingEquity[dayKey]
+	broker := p.broker
+	p.mu.RUnlock()
+	if exists {
+		return nil
+	}
+
+	if broker != nil {
+		acct, err := broker.GetAccount()
+		if err != nil {
+			return err
+		}
+
+		p.mu.Lock()
+		if _, exists := p.startingEquity[dayKey]; !exists {
+			p.startingEquity[dayKey] = acct.Equity.InexactFloat64()
+		}
+		p.mu.Unlock()
+		return nil
+	}
+
+	p.mu.Lock()
+	if _, exists := p.startingEquity[dayKey]; !exists {
+		p.startingEquity[dayKey] = p.lastKnownEquityLocked()
+	}
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *Portfolio) lastKnownEquityLocked() float64 {
+	latestDay := ""
+	for day := range p.startingEquity {
+		if day > latestDay {
+			latestDay = day
+		}
+	}
+	if latestDay == "" {
+		return 0
+	}
+
+	return p.startingEquity[latestDay] + p.pnlByDayKeyLocked(latestDay)
 }

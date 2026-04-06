@@ -3,11 +3,13 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/edwintcloud/go-trade/internal/config"
 	"github.com/edwintcloud/go-trade/internal/domain"
 	"github.com/edwintcloud/go-trade/internal/markethours"
 	"github.com/edwintcloud/go-trade/internal/state"
+	"github.com/labstack/gommon/log"
 )
 
 type Scanner struct {
@@ -34,35 +36,62 @@ func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- do
 			symbol *domain.Symbol
 		}
 
-		flushBatch := func(batch []pendingBar) bool {
-			for _, pending := range batch {
-				if s.state.IsPaused(pending.bar.Timestamp) ||
-					!markethours.IsMarketOpen(pending.bar.Timestamp) {
-					continue
-				}
+		type pendingCandidate struct {
+			bar       domain.Bar
+			metrics   domain.Metrics
+			lastPrice float64
+		}
 
+		flushBatch := func(batch []pendingBar) bool {
+			batchTimestamp := batch[0].bar.Timestamp
+			if err := s.state.Portfolio.EnsureStartingEquity(batchTimestamp); err != nil {
+				log.Errorf("Failed to refresh starting equity for %s: %v", batchTimestamp.In(markethours.Location).Format("2006-01-02"), err)
+				return true
+			}
+
+			if s.state.IsPaused(batchTimestamp) || !markethours.IsMarketOpen(batchTimestamp) {
+				return true
+			}
+
+			candidates := make([]pendingCandidate, 0, len(batch))
+			for _, pending := range batch {
 				metrics := pending.symbol.GetMetrics()
 				lastPrice := pending.symbol.GetLastPrice()
 
-				// Update portfolio first incase we need to exit a position before evaluating new candidates.
-				// This ensures we have the most up-to-date information on open trades, which may impact whether
-				// we emit a new candidate for the same symbol.
+				// Update portfolio first in case we need to exit a position before evaluating new candidates.
 				if s.state.Portfolio.HasOpenTrade(pending.symbol.Name, pending.bar.Timestamp) {
 					s.state.Portfolio.UpdateOpenTrade(pending.symbol.Name, lastPrice, metrics, pending.bar.Timestamp)
 					continue
 				}
 
-				shouldEmit, _ := s.evaluate(pending.symbol.Name, metrics, lastPrice)
+				candidates = append(candidates, pendingCandidate{
+					bar:       pending.bar,
+					metrics:   metrics,
+					lastPrice: lastPrice,
+				})
+			}
+
+			if markethours.HasReachedRegularSessionCloseBuffer(batchTimestamp, 15*time.Minute) {
+				s.state.Portfolio.LiquidateOpenTrades(batchTimestamp)
+				return true
+			}
+
+			if markethours.HasReachedRegularSessionCloseBuffer(batchTimestamp, 30*time.Minute) {
+				return true
+			}
+
+			for _, candidate := range candidates {
+				shouldEmit, _ := s.evaluate(candidate.bar.Symbol, candidate.metrics, candidate.lastPrice)
 				if !shouldEmit {
 					continue
 				}
 
 				select {
 				case out <- domain.Candidate{
-					Symbol:    pending.bar.Symbol,
-					Timestamp: pending.bar.Timestamp,
-					Metrics:   metrics,
-					LastPrice: lastPrice,
+					Symbol:    candidate.bar.Symbol,
+					Timestamp: candidate.bar.Timestamp,
+					Metrics:   candidate.metrics,
+					LastPrice: candidate.lastPrice,
 				}:
 				case <-ctx.Done():
 					return false

@@ -18,6 +18,7 @@ type Symbol struct {
 	lastPrice               float64
 	dailyVolume             uint64
 	dailyVolumeAccStartDate time.Time
+	metricsInitOnce         sync.Once
 	mu                      sync.RWMutex
 	cond                    *sync.Cond
 	pendingBars             int
@@ -29,8 +30,11 @@ func NewSymbol(name string) *Symbol {
 		bars: make(chan Bar, 1000),
 	}
 	s.cond = sync.NewCond(&s.mu)
-	s.initializeMetrics()
 	return s
+}
+
+func (s *Symbol) ensureMetricsInitialized() {
+	s.metricsInitOnce.Do(s.initializeMetrics)
 }
 
 func (s *Symbol) SetLastPrice(newPrice float64) {
@@ -46,6 +50,8 @@ func (s *Symbol) GetLastPrice() float64 {
 }
 
 func (s *Symbol) GetMetrics() Metrics {
+	s.ensureMetricsInitialized()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -63,6 +69,8 @@ func (s *Symbol) GetDailyVolume() uint64 {
 }
 
 func (s *Symbol) AddBar(bar Bar) {
+	s.ensureMetricsInitialized()
+
 	s.mu.Lock()
 	s.updateDailyVolume(bar.Timestamp, bar.Volume)
 	select {

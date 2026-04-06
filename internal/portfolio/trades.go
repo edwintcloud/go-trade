@@ -29,6 +29,11 @@ func (p *Portfolio) hasOpenTrade(symbol string) bool {
 }
 
 func (p *Portfolio) UpdateOpenTrade(symbol string, lastPrice float64, metrics domain.Metrics, timestamp time.Time) {
+	if err := p.EnsureStartingEquity(timestamp); err != nil {
+		log.Errorf("Failed to refresh starting equity for %s: %v", timestamp.In(markethours.Location).Format("2006-01-02"), err)
+		return
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.hasOpenTrade(symbol) {
@@ -61,11 +66,10 @@ func (p *Portfolio) unrelalizedPnl() float64 {
 	return unrealized
 }
 
-func (p *Portfolio) getPnlByDate(date time.Time) float64 {
-	dateKey := date.Format("2006-01-02")
-	trades, exists := p.closedTrades[dateKey]
+func (p *Portfolio) pnlByDayKeyLocked(dayKey string) float64 {
+	trades, exists := p.closedTrades[dayKey]
 	if !exists {
-		return 0
+		return p.unrelalizedPnl()
 	}
 	pnl := 0.0
 	for _, trade := range trades {
@@ -74,6 +78,10 @@ func (p *Portfolio) getPnlByDate(date time.Time) float64 {
 		}
 	}
 	return pnl + p.unrelalizedPnl()
+}
+
+func (p *Portfolio) getPnlByDate(date time.Time) float64 {
+	return p.pnlByDayKeyLocked(date.In(markethours.Location).Format("2006-01-02"))
 }
 
 func (p *Portfolio) calculateProfitOrLossPctByDate(date time.Time) float64 {
@@ -86,9 +94,9 @@ func (p *Portfolio) calculateProfitOrLossPctByDate(date time.Time) float64 {
 }
 
 func (p *Portfolio) currentEquity(date time.Time) float64 {
-	startingEquity, exists := p.startingEquity[date.Format("2006-01-02")]
+	startingEquity, exists := p.startingEquity[date.In(markethours.Location).Format("2006-01-02")]
 	if !exists {
-		log.Debugf("No starting equity set for %s, defaulting to 0", date.Format("2006-01-02"))
+		log.Debugf("No starting equity set for %s, defaulting to 0", date.In(markethours.Location).Format("2006-01-02"))
 		return 0
 	}
 	return startingEquity + p.getPnlByDate(date)
@@ -136,7 +144,7 @@ func (p *Portfolio) determineTradeQuantityWithBuyingPower(entryTimestamp time.Ti
 
 func (p *Portfolio) symbolOnCooldown(symbol string, entryTimestamp time.Time) bool {
 	cooldown := time.Duration(p.config.SameSymbolCooldownMinutes) * time.Minute
-	for _, trade := range p.closedTrades[entryTimestamp.Format("2006-01-02")] {
+	for _, trade := range p.closedTrades[entryTimestamp.In(markethours.Location).Format("2006-01-02")] {
 		if trade.Symbol != symbol || trade.ExitTimestamp.IsZero() {
 			continue
 		}
@@ -197,6 +205,11 @@ func (p *Portfolio) evaluateOpenTradesForAnOpportunitySwap(symbol string, entryT
 }
 
 func (p *Portfolio) TryEnterTrade(symbol string, entryTimestamp time.Time, entryPrice float64, metrics domain.Metrics) bool {
+	if err := p.EnsureStartingEquity(entryTimestamp); err != nil {
+		log.Errorf("Failed to refresh starting equity for %s: %v", entryTimestamp.In(markethours.Location).Format("2006-01-02"), err)
+		return false
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -231,6 +244,19 @@ func (p *Portfolio) TryEnterTrade(symbol string, entryTimestamp time.Time, entry
 	return true
 }
 
+func (p *Portfolio) recordTradeExit(symbol string, exitTimestamp time.Time, exitPrice float64) {
+	if !p.hasOpenTrade(symbol) {
+		return
+	}
+
+	trade := p.openTrades[symbol]
+	trade.ExitTimestamp = exitTimestamp.In(markethours.Location)
+	trade.ExitPrice = exitPrice
+	dateKey := exitTimestamp.In(markethours.Location).Format("2006-01-02")
+	p.closedTrades[dateKey] = append(p.closedTrades[dateKey], *trade)
+	delete(p.openTrades, symbol)
+}
+
 func (p *Portfolio) exitTrade(symbol string, exitTimestamp time.Time, exitPrice float64) {
 	if !p.hasOpenTrade(symbol) {
 		return
@@ -246,12 +272,7 @@ func (p *Portfolio) exitTrade(symbol string, exitTimestamp time.Time, exitPrice 
 			return
 		}
 	}
-
-	trade.ExitTimestamp = exitTimestamp.In(markethours.Location)
-	trade.ExitPrice = exitPrice
-	dateKey := exitTimestamp.Format("2006-01-02")
-	p.closedTrades[dateKey] = append(p.closedTrades[dateKey], *trade)
-	delete(p.openTrades, symbol)
+	p.recordTradeExit(symbol, exitTimestamp, exitPrice)
 }
 
 func (p *Portfolio) stopPriceFor(lastPrice float64, lastAtr float64) float64 {
@@ -272,4 +293,177 @@ func (p *Portfolio) HasOpenTrade(symbol string, timestamp time.Time) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.hasOpenTrade(symbol)
+}
+
+func (p *Portfolio) LiquidateOpenTrades(exitTimestamp time.Time) {
+	if err := p.EnsureStartingEquity(exitTimestamp); err != nil {
+		log.Errorf("Failed to refresh starting equity before liquidation for %s: %v", exitTimestamp.In(markethours.Location).Format("2006-01-02"), err)
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.openTrades) == 0 {
+		return
+	}
+
+	type pendingExit struct {
+		symbol string
+		price  float64
+	}
+
+	exits := make([]pendingExit, 0, len(p.openTrades))
+	for symbol, trade := range p.openTrades {
+		exitPrice := trade.CurrentPrice
+		if exitPrice == 0 {
+			exitPrice = trade.EntryPrice
+		}
+		exits = append(exits, pendingExit{symbol: symbol, price: exitPrice})
+	}
+
+	for _, exit := range exits {
+		p.exitTrade(exit.symbol, exitTimestamp, exit.price)
+	}
+
+	log.Infof("Liquidated %d open position(s) ahead of the session close at %s", len(exits), exitTimestamp.In(markethours.Location).Format("15:04"))
+}
+
+func (p *Portfolio) HydrateOpenTradesFromBroker(snapshotTime time.Time) error {
+	p.mu.RLock()
+	broker := p.broker
+	p.mu.RUnlock()
+	if broker == nil {
+		return nil
+	}
+
+	positions, err := broker.GetPositions()
+	if err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	nextOpenTrades := make(map[string]*Trade, len(positions))
+	for _, position := range positions {
+		if position.Side == "short" {
+			log.Warnf("Ignoring unsupported short position for %s during broker sync", position.Symbol)
+			continue
+		}
+
+		quantity := uint64(position.Qty.Abs().IntPart())
+		if quantity == 0 {
+			continue
+		}
+
+		entryPrice := position.AvgEntryPrice.InexactFloat64()
+		currentPrice := entryPrice
+		if position.CurrentPrice != nil {
+			currentPrice = position.CurrentPrice.InexactFloat64()
+		}
+
+		trade, exists := p.openTrades[position.Symbol]
+		if !exists {
+			trade = &Trade{
+				Symbol:         position.Symbol,
+				EntryTimestamp: snapshotTime.In(markethours.Location),
+				StopPrice:      p.stopPriceFor(currentPrice, 0),
+			}
+		}
+
+		trade.EntryPrice = entryPrice
+		trade.CurrentPrice = currentPrice
+		trade.Quantity = quantity
+		if trade.StopPrice == 0 {
+			trade.StopPrice = p.stopPriceFor(currentPrice, trade.ATR)
+		}
+
+		nextOpenTrades[position.Symbol] = trade
+	}
+	p.openTrades = nextOpenTrades
+	return nil
+}
+
+func (p *Portfolio) HandleTradeUpdate(update alpaca.TradeUpdate) {
+	if update.Order.Symbol == "" {
+		return
+	}
+	if update.Event != "fill" && update.Event != "partial_fill" {
+		return
+	}
+
+	timestamp := update.At.In(markethours.Location)
+	if err := p.EnsureStartingEquity(timestamp); err != nil {
+		log.Errorf("Failed to refresh starting equity from trade update for %s: %v", timestamp.Format("2006-01-02"), err)
+		return
+	}
+
+	if update.PositionQty != nil && update.PositionQty.Abs().Sign() == 0 {
+		exitPrice := 0.0
+		if update.Price != nil {
+			exitPrice = update.Price.InexactFloat64()
+		} else if update.Order.FilledAvgPrice != nil {
+			exitPrice = update.Order.FilledAvgPrice.InexactFloat64()
+		}
+
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if !p.hasOpenTrade(update.Order.Symbol) {
+			return
+		}
+		if exitPrice == 0 {
+			exitPrice = p.openTrades[update.Order.Symbol].CurrentPrice
+		}
+		p.recordTradeExit(update.Order.Symbol, timestamp, exitPrice)
+		return
+	}
+
+	p.mu.RLock()
+	broker := p.broker
+	p.mu.RUnlock()
+	if broker == nil {
+		return
+	}
+
+	position, err := broker.GetPosition(update.Order.Symbol)
+	if err != nil {
+		log.Errorf("Failed to load broker position for %s after trade update: %v", update.Order.Symbol, err)
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if position.Side == "short" {
+		log.Warnf("Ignoring unsupported short position for %s after trade update", position.Symbol)
+		delete(p.openTrades, position.Symbol)
+		return
+	}
+
+	quantity := uint64(position.Qty.Abs().IntPart())
+	if quantity == 0 {
+		delete(p.openTrades, position.Symbol)
+		return
+	}
+
+	entryPrice := position.AvgEntryPrice.InexactFloat64()
+	currentPrice := entryPrice
+	if position.CurrentPrice != nil {
+		currentPrice = position.CurrentPrice.InexactFloat64()
+	}
+
+	trade, exists := p.openTrades[position.Symbol]
+	if !exists {
+		trade = &Trade{
+			Symbol:         position.Symbol,
+			EntryTimestamp: timestamp,
+			StopPrice:      p.stopPriceFor(currentPrice, 0),
+		}
+		p.openTrades[position.Symbol] = trade
+	}
+
+	trade.EntryPrice = entryPrice
+	trade.CurrentPrice = currentPrice
+	trade.Quantity = quantity
+	if trade.StopPrice == 0 {
+		trade.StopPrice = p.stopPriceFor(currentPrice, trade.ATR)
+	}
 }

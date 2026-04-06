@@ -17,6 +17,13 @@ type Client struct {
 	tradeClient     *alpaca.Client
 }
 
+func newStocksStreamClient(config *config.Config) *stream.StocksClient {
+	return stream.NewStocksClient(
+		marketdata.SIP,
+		stream.WithCredentials(config.AlpacaAPIKey, config.AlpacaAPISecret),
+	)
+}
+
 func NewClient(config *config.Config) *Client {
 	return &Client{
 		config: config,
@@ -29,9 +36,6 @@ func NewClient(config *config.Config) *Client {
 			APIKey:    config.AlpacaAPIKey,
 			APISecret: config.AlpacaAPISecret,
 		}),
-		streamClient: stream.NewStocksClient(
-			marketdata.SIP,
-			stream.WithCredentials(config.AlpacaAPIKey, config.AlpacaAPISecret),
-		),
+		streamClient: newStocksStreamClient(config),
 	}
 }

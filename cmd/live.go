@@ -45,6 +45,7 @@ func runLive() {
 	state := state.NewState(config, symbolList)
 
 	state.Portfolio.SetBroker(client)
+	client.StreamTradeUpdatesInBackground(ctx, state.Portfolio.HandleTradeUpdate)
 
 	// start scanner before historical loading so fetching and scanning can overlap.
 	minuteBars := make(chan domain.Bar, config.ChannelBufferSize)

@@ -1,6 +1,7 @@
 package alpaca
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
@@ -82,4 +83,16 @@ func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) error 
 
 func (c *Client) GetAccount() (*alpaca.Account, error) {
 	return c.tradeClient.GetAccount()
+}
+
+func (c *Client) GetPositions() ([]alpaca.Position, error) {
+	return c.tradeClient.GetPositions()
+}
+
+func (c *Client) GetPosition(symbol string) (*alpaca.Position, error) {
+	return c.tradeClient.GetPosition(symbol)
+}
+
+func (c *Client) StreamTradeUpdatesInBackground(ctx context.Context, handler func(alpaca.TradeUpdate)) {
+	c.tradeClient.StreamTradeUpdatesInBackground(ctx, handler)
 }
