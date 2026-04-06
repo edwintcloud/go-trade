@@ -8,11 +8,15 @@ import (
 
 type State struct {
 	paused    atomic.Bool
-	portfolio *domain.Portfolio
+	Portfolio *domain.Portfolio
+	Symbols  *domain.Symbols
 }
 
-func NewState(portfolio *domain.Portfolio) *State {
-	return &State{portfolio: portfolio}
+func NewState(portfolio *domain.Portfolio, symbols *domain.Symbols) *State {
+	return &State{
+		Portfolio: portfolio,
+		Symbols:  symbols,
+	}
 }
 
 func (s *State) IsPaused() bool {

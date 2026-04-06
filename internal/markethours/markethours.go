@@ -26,3 +26,9 @@ func IsMarketOpen(t time.Time) bool {
 func IsMarketClosed(t time.Time) bool {
 	return !IsMarketOpen(t)
 }
+
+func IsSameDay(t1, t2 time.Time) bool {
+	return t1.In(Location).Year() == t2.In(Location).Year() &&
+		t1.In(Location).Month() == t2.In(Location).Month() &&
+		t1.In(Location).Day() == t2.In(Location).Day()
+}

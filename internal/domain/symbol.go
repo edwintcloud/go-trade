@@ -2,21 +2,25 @@ package domain
 
 import (
 	"sync"
+	"time"
 
 	"github.com/cinar/indicator/v2/helper"
 	"github.com/cinar/indicator/v2/momentum"
 	"github.com/cinar/indicator/v2/trend"
 	"github.com/cinar/indicator/v2/volatility"
+	"github.com/edwintcloud/go-trade/internal/markethours"
 )
 
 type Symbol struct {
-	Name        string
-	bars        chan Bar
-	metrics     Metrics
-	lastPrice   float64
-	mu          sync.RWMutex
-	cond        *sync.Cond
-	pendingBars int
+	Name                    string
+	bars                    chan Bar
+	metrics                 Metrics
+	lastPrice               float64
+	dailyVolume             uint64
+	dailyVolumeAccStartDate time.Time
+	mu                      sync.RWMutex
+	cond                    *sync.Cond
+	pendingBars             int
 }
 
 func NewSymbol(name string) *Symbol {
@@ -52,8 +56,15 @@ func (s *Symbol) GetMetrics() Metrics {
 	return s.metrics
 }
 
+func (s *Symbol) GetDailyVolume() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dailyVolume
+}
+
 func (s *Symbol) AddBar(bar Bar) {
 	s.mu.Lock()
+	s.updateDailyVolume(bar.Timestamp, bar.Volume)
 	select {
 	case s.bars <- bar:
 		s.pendingBars++
@@ -64,6 +75,16 @@ func (s *Symbol) AddBar(bar Bar) {
 	}
 	s.cond.Broadcast()
 	s.mu.Unlock()
+}
+
+func (s *Symbol) updateDailyVolume(currentTime time.Time, barVolume uint64) {
+	if !markethours.IsSameDay(s.dailyVolumeAccStartDate, currentTime) {
+		s.dailyVolume = barVolume
+		s.dailyVolumeAccStartDate = currentTime
+		return
+	}
+
+	s.dailyVolume += barVolume
 }
 
 func (s *Symbol) initializeMetrics() {

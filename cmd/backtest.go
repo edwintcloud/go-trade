@@ -55,7 +55,6 @@ func runBacktest(startTime time.Time, endTime time.Time, startingEquity float64,
 	config := config.LoadConfig()
 
 	portfolio := domain.NewPortfolio(startTime, startingEquity)
-	state := state.NewState(portfolio)
 
 	client := alpaca.NewClient(config)
 
@@ -74,10 +73,13 @@ func runBacktest(startTime time.Time, endTime time.Time, startingEquity float64,
 	}
 	symbols := domain.NewSymbols(symbolList)
 
+	state := state.NewState(portfolio, symbols)
+
+
 	// start scanner before historical loading so fetching and scanning can overlap.
 	minuteBars := make(chan domain.Bar, config.ChannelBufferSize)
 	candidates := make(chan domain.Candidate, config.ChannelBufferSize)
-	scanner := scanner.NewScanner(config, state, symbols, portfolio)
+	scanner := scanner.NewScanner(config, state)
 
 	done, err := scanner.Start(ctx, minuteBars, candidates)
 	if err != nil {
