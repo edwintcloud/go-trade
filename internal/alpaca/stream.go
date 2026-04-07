@@ -22,6 +22,14 @@ func (c *Client) ensureStreamConnected(ctx context.Context) error {
 	return nil
 }
 
+func (c *Client) SubscribeQuotes(symbol string, onUpdate func(stream.Quote)) error {
+	return c.streamClient.SubscribeToQuotes(onUpdate, symbol)
+}
+
+func (c *Client) UnsubscribeQuotes(symbol string) error {
+	return c.streamClient.UnsubscribeFromQuotes(symbol)
+}
+
 func (c *Client) StreamLiveMinuteBars(ctx context.Context, symbols []string, out chan<- domain.Bar) error {
 	if len(symbols) == 0 {
 		return nil

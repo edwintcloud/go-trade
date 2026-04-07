@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/edwintcloud/go-trade/internal/domain"
 	"github.com/edwintcloud/go-trade/internal/markethours"
 	"github.com/labstack/gommon/log"
@@ -12,6 +13,22 @@ import (
 func (p *Portfolio) hasOpenTrade(symbol string) bool {
 	_, exists := p.openTrades[symbol]
 	return exists
+}
+
+func (p *Portfolio) evaluateExitConditions(symbol string, lastPrice float64, timestamp time.Time) {
+	if !p.hasOpenTrade(symbol) {
+		return
+	}
+	trade := p.openTrades[symbol]
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	trade.CurrentPrice = lastPrice
+	if lastPrice <= trade.StopPrice ||
+		markethours.DurationElapsed(time.Duration(p.config.MinutesUntilBreakEvenStop)*time.Minute, trade.EntryTimestamp, timestamp) {
+		p.exitTrade(symbol, timestamp, lastPrice)
+	} else {
+		trade.StopPrice = max(trade.StopPrice, p.stopPriceFor(lastPrice, trade.CurrentMetrics.ATR))
+	}
 }
 
 func (p *Portfolio) UpdateOpenTrade(symbol string, lastPrice float64, metrics domain.Metrics, timestamp time.Time) {
@@ -26,13 +43,7 @@ func (p *Portfolio) UpdateOpenTrade(symbol string, lastPrice float64, metrics do
 		return
 	}
 	trade := p.openTrades[symbol]
-	trade.CurrentPrice = lastPrice
 	trade.CurrentMetrics = metrics
-	if lastPrice <= trade.StopPrice {
-		p.exitTrade(symbol, timestamp, lastPrice)
-	} else {
-		p.updateStopPrice(symbol, timestamp, lastPrice, metrics.ATR)
-	}
 }
 
 func (p *Portfolio) nTradesByDate(date time.Time) int {
@@ -201,6 +212,7 @@ func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
 	entryTimestamp := candidate.Timestamp
 	entryPrice := candidate.LastPrice
 	metrics := candidate.Metrics
+	stopPrice := p.stopPriceFor(entryPrice, metrics.ATR)
 
 	if err := p.EnsureStartingEquity(entryTimestamp); err != nil {
 		log.Errorf("Failed to refresh starting equity for %s: %v", entryTimestamp.In(markethours.Location).Format("2006-01-02"), err)
@@ -221,10 +233,24 @@ func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
 
 	// enter trade with broker if available
 	if p.broker != nil {
-		err := p.broker.SubmitOrder(symbol, quantity, alpaca.Buy)
+		order, err := p.broker.SubmitOrder(symbol, quantity, alpaca.Buy)
 		if err != nil {
 			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
 			return false
+		}
+		_ = p.broker.SubscribeQuotes(symbol, func(quote stream.Quote) {
+			p.evaluateExitConditions(symbol, quote.BidPrice, quote.Timestamp)
+		})
+		entryPrice = order.FilledAvgPrice.InexactFloat64()
+		stopPrice = p.stopPriceFor(entryPrice, metrics.ATR)
+		// send notification for new trade
+		if p.telegram != nil {
+			p.telegram.NotifyTradeOpened(domain.Trade{
+				Symbol:     symbol,
+				Quantity:   quantity,
+				EntryPrice: entryPrice,
+				StopPrice:  stopPrice,
+			})
 		}
 	}
 
@@ -232,23 +258,11 @@ func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
 		Symbol:         symbol,
 		EntryTimestamp: entryTimestamp.In(markethours.Location),
 		EntryPrice:     entryPrice,
+		StopPrice:      stopPrice,
 		EntryMetrics:   metrics,
 		CurrentPrice:   entryPrice,
 		CurrentMetrics: metrics,
-		ATR:            metrics.ATR,
 		Quantity:       quantity,
-	}
-
-	stopPrice := p.updateStopPrice(symbol, entryTimestamp, entryPrice, metrics.ATR)
-
-	// send notification for new trade
-	if p.telegram != nil {
-		p.telegram.NotifyTradeOpened(domain.Trade{
-			Symbol:     symbol,
-			Quantity:   quantity,
-			EntryPrice: entryPrice,
-			StopPrice:  stopPrice,
-		})
 	}
 
 	return true
@@ -276,37 +290,26 @@ func (p *Portfolio) exitTrade(symbol string, exitTimestamp time.Time, exitPrice 
 
 	// exit trade with broker if available
 	if p.broker != nil {
-		err := p.broker.SubmitOrder(symbol, trade.Quantity, alpaca.Sell)
+		order, err := p.broker.SubmitOrder(symbol, trade.Quantity, alpaca.Sell)
 		if err != nil {
 			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
 			return
 		}
+		_ = p.broker.UnsubscribeQuotes(symbol)
+		exitPrice = order.FilledAvgPrice.InexactFloat64()
+		// send notification for closed trade
+		if p.telegram != nil {
+			p.telegram.NotifyTradeClosed(domain.Trade{
+				Symbol:    symbol,
+				ExitPrice: exitPrice,
+			})
+		}
 	}
 	p.recordTradeExit(symbol, exitTimestamp, exitPrice)
-
-	// send notification for closed trade
-	if p.telegram != nil {
-		p.telegram.NotifyTradeClosed(domain.Trade{
-			Symbol:    symbol,
-			ExitPrice: exitPrice,
-		})
-	}
 }
 
 func (p *Portfolio) stopPriceFor(lastPrice float64, lastAtr float64) float64 {
 	return max(lastPrice*(1-p.config.TrailingStopPctFallback), lastPrice-lastAtr*p.config.TrailingStopAtrMultiplier)
-}
-
-func (p *Portfolio) updateStopPrice(symbol string, timestamp time.Time, lastPrice float64, lastAtr float64) float64 {
-	newStop := p.stopPriceFor(lastPrice, lastAtr)
-	if p.openTrades[symbol].EntryTimestamp.Add(time.Duration(p.config.MinutesUntilBreakEvenStop) * time.Minute).Before(timestamp.In(markethours.Location)) {
-		newStop = max(newStop, p.openTrades[symbol].EntryPrice)
-	}
-	if newStop > p.openTrades[symbol].StopPrice {
-		p.openTrades[symbol].StopPrice = newStop
-		return newStop
-	}
-	return p.openTrades[symbol].StopPrice
 }
 
 func (p *Portfolio) HasOpenTrade(symbol string, timestamp time.Time) bool {
@@ -394,7 +397,7 @@ func (p *Portfolio) HydrateOpenTradesFromBroker(snapshotTime time.Time) error {
 		trade.CurrentPrice = currentPrice
 		trade.Quantity = quantity
 		if trade.StopPrice == 0 {
-			trade.StopPrice = p.stopPriceFor(currentPrice, trade.ATR)
+			trade.StopPrice = p.stopPriceFor(currentPrice, trade.CurrentMetrics.ATR)
 		}
 
 		nextOpenTrades[position.Symbol] = trade
@@ -484,6 +487,6 @@ func (p *Portfolio) HandleTradeUpdate(update alpaca.TradeUpdate) {
 	trade.CurrentPrice = currentPrice
 	trade.Quantity = quantity
 	if trade.StopPrice == 0 {
-		trade.StopPrice = p.stopPriceFor(currentPrice, trade.ATR)
+		trade.StopPrice = p.stopPriceFor(currentPrice, trade.CurrentMetrics.ATR)
 	}
 }

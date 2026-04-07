@@ -13,7 +13,6 @@ type Trade struct {
 	CurrentPrice   float64
 	CurrentMetrics Metrics
 	ExitPrice      float64
-	ATR            float64
 	StopPrice      float64
 	Quantity       uint64
 }

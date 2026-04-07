@@ -13,6 +13,10 @@ func IsMarketDay(t time.Time) bool {
 	return !isNYSEHoliday(local)
 }
 
+func DurationElapsed(duration time.Duration, start, current time.Time) bool {
+	return current.Sub(start) >= duration
+}
+
 func regularSessionBounds(t time.Time) (time.Time, time.Time) {
 	local := t.In(Location)
 	open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, Location)
