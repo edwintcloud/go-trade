@@ -40,7 +40,11 @@ func (c *Client) GetSymbols() ([]string, error) {
 	return result, nil
 }
 
-func (c *Client) ensureSubmitOrder(symbol string, qty uint64, side alpaca.Side, nRetries int, i *int) (*alpaca.Order, error) {
+func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (*alpaca.Order, error) {
+	if qty == 0 {
+		return nil, nil
+	}
+
 	var limitPrice float64
 	quote, err := c.dataClient.GetLatestQuote(symbol, marketdata.GetLatestQuoteRequest{
 		Feed: marketdata.SIP,
@@ -75,26 +79,8 @@ func (c *Client) ensureSubmitOrder(symbol string, qty uint64, side alpaca.Side, 
 	if err != nil {
 		return nil, fmt.Errorf("place order for %s: %w", symbol, err)
 	}
-	if order.FilledQty.IntPart() != int64(qty) {
-		log.Warnf("Order for %d shares of %s filled with quantity %d", qty, symbol, order.FilledQty.IntPart())
-		*i += 1
-		return c.ensureSubmitOrder(symbol, min(qty-uint64(order.FilledQty.InexactFloat64()), 0), side, nRetries, i)
-	}
-	return order, nil
-}
 
-func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (*alpaca.Order, error) {
-	if qty == 0 {
-		return nil, nil
-	}
-
-	i := 0
-	order, err := c.ensureSubmitOrder(symbol, qty, side, 3, &i)
-	if err != nil {
-		return nil, err
-	}
-
-	log.Infof("Filled %s order for %d shares of %s at average price %.2f after %d tries", side, qty, symbol, order.FilledAvgPrice.InexactFloat64(), i+1)
+	log.Infof("Filled %s order for %d shares of %s at average price %.2f", side, qty, symbol, order.FilledAvgPrice.InexactFloat64())
 	return order, nil
 }
 
