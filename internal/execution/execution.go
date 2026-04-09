@@ -106,7 +106,8 @@ func (e *ExecutionEngine) handleBar(symbol string, bar stream.Bar) {
 	time.Sleep(1 * time.Second) // slight delay to ensure metrics are updated before evaluating entry conditions
 	lastPrice := domainSymbol.GetLastPrice()
 	metrics := domainSymbol.GetMetrics()
-	if ok, _ := e.evaluateEntryConditions(metrics); ok {
+	ok, reason := e.evaluateEntryConditions(metrics)
+	if ok {
 		log.Infof("Entry conditions met for %s at price %.2f", symbol, lastPrice)
 		entryTimestamp := time.Now().In(markethours.Location)
 		e.state.Portfolio.TryEnterTrade(domain.Candidate{
@@ -115,6 +116,8 @@ func (e *ExecutionEngine) handleBar(symbol string, bar stream.Bar) {
 			LastPrice: lastPrice,
 			Metrics:   metrics,
 		})
+	} else {
+		log.Debugf("Entry conditions not met for %s at price %.2f: %s", symbol, lastPrice, reason)
 	}
 }
 
@@ -157,8 +160,8 @@ func (e *ExecutionEngine) evaluateEntryConditions(metrics domain.Metrics) (bool,
 	if metrics.HullMa == 0 || metrics.HullMaRoc == 0 {
 		return false, "not-ready"
 	}
-	if metrics.HullMaRoc > 0 {
-		return true, "hull-ma-roc-positive"
+	if metrics.HullMaRoc < 0 {
+		return false, "hull-ma-roc-negative"
 	}
-	return false, ""
+	return true, ""
 }
