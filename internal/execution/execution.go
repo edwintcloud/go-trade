@@ -96,61 +96,61 @@ func (e *ExecutionEngine) ensureSubscriptions(ctx context.Context) {
 	// TODO: reconcile open trades with current subscriptions and subscribe to any missing symbols for open trades
 }
 
+func (e *ExecutionEngine) handleBar(symbol string, bar stream.Bar) {
+	domainSymbol, ok := e.state.Symbols.Get(symbol)
+	if !ok {
+		log.Warnf("Received bar for unregistered symbol: %s", symbol)
+		return
+	}
+	domainSymbol.AddBar(domain.BarFromStreamBar(bar))
+	time.Sleep(1 * time.Second) // slight delay to ensure metrics are updated before evaluating entry conditions
+	lastPrice := domainSymbol.GetLastPrice()
+	metrics := domainSymbol.GetMetrics()
+	if ok, _ := e.evaluateEntryConditions(metrics); ok {
+		log.Infof("Entry conditions met for %s at price %.2f", symbol, lastPrice)
+		entryTimestamp := time.Now().In(markethours.Location)
+		e.state.Portfolio.TryEnterTrade(domain.Candidate{
+			Symbol:    symbol,
+			Timestamp: entryTimestamp,
+			LastPrice: lastPrice,
+			Metrics:   metrics,
+		})
+	}
+}
+
+func (e *ExecutionEngine) handleQuote(symbol string, quote stream.Quote) {
+	domainSymbol, ok := e.state.Symbols.Get(symbol)
+	if !ok {
+		log.Warnf("Received quote for unregistered symbol: %s", symbol)
+		return
+	}
+	timestamp := time.Now().In(markethours.Location)
+	// evaluate immediate exit based on metrics
+	if domainSymbol.GetMetrics().HullMaRoc < 0 {
+		log.Infof("Exit conditions met for %s at price %.2f", symbol, quote.BidPrice)
+		e.state.Portfolio.ExitTrade(symbol, timestamp, quote.BidPrice)
+		return
+	}
+	// evaluate exit based on trailing atr stop loss and update the stop loss price if necessary
+	e.state.Portfolio.EvaluateExitConditions(symbol, quote.BidPrice, timestamp)
+}
+
 func (e *ExecutionEngine) subscribeToSymbol(ctx context.Context, symbol string) error {
 	// subscribe to minute bars for entry signals
-	err := e.client.SubscribeToBars(ctx, func(bar stream.Bar) {
-		domainSymbol, ok := e.state.Symbols.Get(symbol)
-		if !ok {
-			log.Warnf("Received bar for unregistered symbol: %s", symbol)
-			return
-		}
-		domainSymbol.AddBar(domain.BarFromStreamBar(bar))
-		time.Sleep(1 * time.Second) // slight delay to ensure metrics are updated before evaluating entry conditions
-		lastPrice := domainSymbol.GetLastPrice()
-		metrics := domainSymbol.GetMetrics()
-		if ok, _ := e.evaluateEntryConditions(metrics); ok {
-			log.Infof("Entry conditions met for %s at price %.2f", symbol, lastPrice)
-			entryTimestamp := time.Now().In(markethours.Location)
-			e.state.Portfolio.TryEnterTrade(domain.Candidate{
-				Symbol:    symbol,
-				Timestamp: entryTimestamp,
-				LastPrice: lastPrice,
-				Metrics:   metrics,
-			})
-		}
-	}, symbol)
+	err := e.client.SubscribeToBars(ctx, func(bar stream.Bar) { e.handleBar(symbol, bar) }, symbol)
 	if err != nil {
 		return err
 	}
 	// subscribe to quote updates for updating price in real time for open trades
-	err = e.client.SubscribeQuotes(ctx, func(quote stream.Quote) {
-		domainSymbol, ok := e.state.Symbols.Get(symbol)
-		if !ok {
-			log.Warnf("Received quote for unregistered symbol: %s", symbol)
-			return
-		}
-		timestamp := time.Now().In(markethours.Location)
-		// evaluate immediate exit based on metrics
-		if domainSymbol.GetMetrics().HullMaRoc < 0 {
-			log.Infof("Exit conditions met for %s at price %.2f", symbol, quote.BidPrice)
-			e.state.Portfolio.ExitTrade(symbol, timestamp, quote.BidPrice)
-			return
-		}
-		// evaluate exit based on trailing atr stop loss and update the stop loss price if necessary
-		e.state.Portfolio.EvaluateExitConditions(symbol, quote.BidPrice, timestamp)
-	}, symbol)
-	if err != nil {
-		return err
-	}
-	return nil
+	return e.client.SubscribeQuotes(ctx, func(quote stream.Quote) { e.handleQuote(symbol, quote) }, symbol)
 }
 
 func (e *ExecutionEngine) unsubscribeFromSymbol(symbol string) error {
-	err := e.client.UnsubscribeQuotes([]string{symbol})
+	err := e.client.UnsubscribeFromBars(symbol)
 	if err != nil {
 		return err
 	}
-	return nil
+	return e.client.UnsubscribeQuotes(symbol)
 }
 
 func (e *ExecutionEngine) evaluateEntryConditions(metrics domain.Metrics) (bool, string) {

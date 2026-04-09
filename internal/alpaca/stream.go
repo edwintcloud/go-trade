@@ -42,7 +42,7 @@ func (c *Client) SubscribeToBars(ctx context.Context, handler func(stream.Bar), 
 	return c.streamClient.SubscribeToBars(handler, symbols...)
 }
 
-func (c *Client) UnsubscribeFromBars(symbols []string) error {
+func (c *Client) UnsubscribeFromBars(symbols ...string) error {
 	return c.streamClient.UnsubscribeFromBars(symbols...)
 }
 
@@ -56,7 +56,7 @@ func (c *Client) SubscribeQuotes(ctx context.Context, handler func(stream.Quote)
 	return c.streamClient.SubscribeToQuotes(handler, symbols...)
 }
 
-func (c *Client) UnsubscribeQuotes(symbols []string) error {
+func (c *Client) UnsubscribeQuotes(symbols ...string) error {
 	return c.streamClient.UnsubscribeFromQuotes(symbols...)
 }
 

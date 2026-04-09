@@ -11,7 +11,7 @@ type PriorityQueueItem struct {
 }
 
 type PriorityQueue struct {
-	mu sync.RWMutex
+	mu    sync.RWMutex
 	q     []PriorityQueueItem
 	index map[string]int
 }
@@ -79,7 +79,7 @@ func (pq *PriorityQueue) PeekN(n int) []PriorityQueueItem {
 	}
 	result := make([]PriorityQueueItem, n)
 	for i := range n {
-		item  := heap.Pop(pq).(PriorityQueueItem)
+		item := heap.Pop(pq).(PriorityQueueItem)
 		result[i] = item
 	}
 	for _, v := range result {
