@@ -11,18 +11,20 @@ import (
 )
 
 type State struct {
-	config    *config.Config
-	Symbols   *domain.Symbols
-	Portfolio *portfolio.Portfolio
-	pausedAt  time.Time
-	mu        sync.RWMutex
+	config     *config.Config
+	SymbolList []string
+	Symbols    *domain.Symbols
+	Portfolio  *portfolio.Portfolio
+	pausedAt   time.Time
+	mu         sync.RWMutex
 }
 
 func NewState(config *config.Config, symbolList []string) *State {
 	return &State{
-		config:    config,
-		Symbols:   domain.NewSymbols(symbolList),
-		Portfolio: portfolio.NewPortfolio(config),
+		config:     config,
+		SymbolList: symbolList,
+		Symbols:    domain.NewSymbols(symbolList),
+		Portfolio:  portfolio.NewPortfolio(config),
 	}
 }
 

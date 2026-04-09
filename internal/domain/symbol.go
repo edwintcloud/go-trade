@@ -27,6 +27,8 @@ type alignedMetricStreams struct {
 	rsi        <-chan float64
 	ema        <-chan float64
 	emaRoc     <-chan float64
+	hullMa     <-chan float64
+	hullMaRoc  <-chan float64
 }
 
 type Symbol struct {
@@ -217,6 +219,8 @@ func (s *Symbol) initializeMetrics() {
 	rsiBars := make(chan Bar)
 	emaBars := make(chan Bar)
 	currentBars := make(chan Bar)
+	hullMaBars := make(chan Bar)
+	hullMaRocBars := make(chan Bar)
 
 	go func() {
 		for bar := range s.bars {
@@ -228,6 +232,8 @@ func (s *Symbol) initializeMetrics() {
 			rsiBars <- bar
 			emaBars <- bar
 			currentBars <- bar
+			hullMaBars <- bar
+			hullMaRocBars <- bar
 		}
 	}()
 
@@ -262,6 +268,13 @@ func (s *Symbol) initializeMetrics() {
 	emaStreams := helper.Duplicate(emaRaw, 2)
 	emaRocIndicator := trend.NewRocWithPeriod[float64](5)
 
+	// hull ma
+	hullMaIndicator := trend.NewHmaWithPeriod[float64](30)
+	closesHullMa := helper.Map(hullMaBars, func(b Bar) float64 { return b.Close })
+	hullMaRaw := hullMaIndicator.Compute(closesHullMa)
+	hullMaStreams := helper.Duplicate(hullMaRaw, 2)
+	hullMaRocIndicator := trend.NewRocWithPeriod[float64](5)
+
 	s.consumeMetrics(currentBars, alignedMetricStreams{
 		macd:       alignMetricStream(macdStreams[0], macdIndicator.IdlePeriod()),
 		macdRoc:    alignMetricStream(macdRocIndicator.Compute(macdStreams[1]), macdIndicator.IdlePeriod()+macdRocIndicator.IdlePeriod()),
@@ -271,6 +284,8 @@ func (s *Symbol) initializeMetrics() {
 		rsi:        alignMetricStream(rsiRaw, rsiIndicator.IdlePeriod()),
 		ema:        alignMetricStream(emaStreams[0], emaIndicator.IdlePeriod()),
 		emaRoc:     alignMetricStream(emaRocIndicator.Compute(emaStreams[1]), emaIndicator.IdlePeriod()+emaRocIndicator.IdlePeriod()),
+		hullMa:     alignMetricStream(hullMaStreams[0], hullMaIndicator.IdlePeriod()),
+		hullMaRoc:  alignMetricStream(hullMaRocIndicator.Compute(hullMaStreams[1]), hullMaIndicator.IdlePeriod()+hullMaRocIndicator.IdlePeriod()),
 	})
 }
 
@@ -309,6 +324,14 @@ func (s *Symbol) consumeMetrics(currentBars <-chan Bar, streams alignedMetricStr
 			if !ok {
 				return
 			}
+			hullMa, ok := <-streams.hullMa
+			if !ok {
+				return
+			}
+			hullMaRoc, ok := <-streams.hullMaRoc
+			if !ok {
+				return
+			}
 
 			s.mu.Lock()
 			s.metrics.MACD = macd
@@ -319,6 +342,8 @@ func (s *Symbol) consumeMetrics(currentBars <-chan Bar, streams alignedMetricStr
 			s.metrics.RSI = rsi
 			s.metrics.EMA20 = ema
 			s.metrics.EMA20Roc = emaRoc
+			s.metrics.HullMa = hullMa
+			s.metrics.HullMaRoc = hullMaRoc
 			if s.pendingBars > 0 {
 				s.pendingBars--
 			}

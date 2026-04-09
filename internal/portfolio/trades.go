@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
-	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/edwintcloud/go-trade/internal/domain"
 	"github.com/edwintcloud/go-trade/internal/markethours"
 	"github.com/labstack/gommon/log"
@@ -15,7 +14,7 @@ func (p *Portfolio) hasOpenTrade(symbol string) bool {
 	return exists
 }
 
-func (p *Portfolio) evaluateExitConditions(symbol string, lastPrice float64, timestamp time.Time) {
+func (p *Portfolio) EvaluateExitConditions(symbol string, lastPrice float64, timestamp time.Time) {
 	if !p.hasOpenTrade(symbol) {
 		return
 	}
@@ -29,6 +28,12 @@ func (p *Portfolio) evaluateExitConditions(symbol string, lastPrice float64, tim
 	} else {
 		trade.StopPrice = max(trade.StopPrice, p.stopPriceFor(lastPrice, trade.CurrentMetrics.ATR))
 	}
+}
+
+func (p *Portfolio) ExitTrade(symbol string, exitTimestamp time.Time, exitPrice float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.exitTrade(symbol, exitTimestamp, exitPrice)
 }
 
 func (p *Portfolio) UpdateOpenTrade(symbol string, lastPrice float64, metrics domain.Metrics, timestamp time.Time) {
@@ -238,9 +243,6 @@ func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
 			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
 			return false
 		}
-		_ = p.broker.SubscribeQuotes(symbol, func(quote stream.Quote) {
-			p.evaluateExitConditions(symbol, quote.BidPrice, quote.Timestamp)
-		})
 		entryPrice = order.FilledAvgPrice.InexactFloat64()
 		stopPrice = p.stopPriceFor(entryPrice, metrics.ATR)
 		// send notification for new trade
@@ -295,7 +297,6 @@ func (p *Portfolio) exitTrade(symbol string, exitTimestamp time.Time, exitPrice 
 			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
 			return
 		}
-		_ = p.broker.UnsubscribeQuotes(symbol)
 		exitPrice = order.FilledAvgPrice.InexactFloat64()
 		// send notification for closed trade
 		if p.telegram != nil {

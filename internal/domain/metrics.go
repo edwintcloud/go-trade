@@ -9,6 +9,8 @@ type Metrics struct {
 	RSI                      float64
 	EMA20                    float64
 	EMA20Roc                 float64
+	HullMa                   float64
+	HullMaRoc                float64
 	SessionVWAP              float64
 	RelativeVolume20         float64
 	TradeCountAccel          float64

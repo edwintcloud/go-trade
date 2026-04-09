@@ -9,7 +9,7 @@ import (
 	"github.com/edwintcloud/go-trade/internal/domain"
 )
 
-func (c *Client) ensureStreamConnected(ctx context.Context) error {
+func (c *Client) EnsureStreamConnected(ctx context.Context) error {
 	if c.streamConnected.Load() {
 		return nil
 	}
@@ -22,12 +22,42 @@ func (c *Client) ensureStreamConnected(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) SubscribeQuotes(symbol string, onUpdate func(stream.Quote)) error {
-	return c.streamClient.SubscribeToQuotes(onUpdate, symbol)
+func (c *Client) SubscribeToDailyBars(ctx context.Context, handler func(stream.Bar), symbols ...string) error {
+	if len(symbols) == 0 {
+		return nil
+	}
+	if err := c.EnsureStreamConnected(ctx); err != nil {
+		return err
+	}
+	return c.streamClient.SubscribeToDailyBars(handler, symbols...)
 }
 
-func (c *Client) UnsubscribeQuotes(symbol string) error {
-	return c.streamClient.UnsubscribeFromQuotes(symbol)
+func (c *Client) SubscribeToBars(ctx context.Context, handler func(stream.Bar), symbols ...string) error {
+	if len(symbols) == 0 {
+		return nil
+	}
+	if err := c.EnsureStreamConnected(ctx); err != nil {
+		return err
+	}
+	return c.streamClient.SubscribeToBars(handler, symbols...)
+}
+
+func (c *Client) UnsubscribeFromBars(symbols []string) error {
+	return c.streamClient.UnsubscribeFromBars(symbols...)
+}
+
+func (c *Client) SubscribeQuotes(ctx context.Context, handler func(stream.Quote), symbols ...string) error {
+	if len(symbols) == 0 {
+		return nil
+	}
+	if err := c.EnsureStreamConnected(ctx); err != nil {
+		return err
+	}
+	return c.streamClient.SubscribeToQuotes(handler, symbols...)
+}
+
+func (c *Client) UnsubscribeQuotes(symbols []string) error {
+	return c.streamClient.UnsubscribeFromQuotes(symbols...)
 }
 
 func (c *Client) StreamLiveMinuteBars(ctx context.Context, symbols []string, out chan<- domain.Bar) error {
@@ -35,7 +65,7 @@ func (c *Client) StreamLiveMinuteBars(ctx context.Context, symbols []string, out
 		return nil
 	}
 	for {
-		if err := c.ensureStreamConnected(ctx); err != nil {
+		if err := c.EnsureStreamConnected(ctx); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}

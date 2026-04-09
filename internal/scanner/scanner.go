@@ -2,9 +2,10 @@ package scanner
 
 import (
 	"context"
-	"fmt"
 	"time"
 
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
+	"github.com/edwintcloud/go-trade/internal/alpaca"
 	"github.com/edwintcloud/go-trade/internal/config"
 	"github.com/edwintcloud/go-trade/internal/domain"
 	"github.com/edwintcloud/go-trade/internal/markethours"
@@ -13,209 +14,69 @@ import (
 )
 
 type Scanner struct {
+	client *alpaca.Client
 	config *config.Config
 	state  *state.State
 }
 
-func NewScanner(config *config.Config, state *state.State) *Scanner {
-	return &Scanner{config: config, state: state}
+func NewScanner(client *alpaca.Client, config *config.Config, state *state.State) *Scanner {
+	return &Scanner{
+		client: client,
+		config: config,
+		state:  state,
+	}
 }
 
-func (s *Scanner) Start(ctx context.Context, in <-chan domain.Bar, out chan<- domain.Candidate) (<-chan struct{}, error) {
-	if s.config == nil || s.state == nil || s.state.Symbols == nil || s.state.Portfolio == nil {
-		return nil, fmt.Errorf("scanner not initialized")
-	}
+// emits top 10 volume symbols on an interval of 1 minute
+// caller must keep a map of symbols currently subscribed for strategy
+func (s *Scanner) Start(ctx context.Context, out chan<- string) error {
+	pq := domain.NewPriorityQueue()
 
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-
-		type pendingBar struct {
-			bar    domain.Bar
-			symbol *domain.Symbol
+	handler := func(bar stream.Bar) {
+		if !markethours.IsMarketOpen(bar.Timestamp) || markethours.HasReachedRegularSessionCloseBuffer(bar.Timestamp, 30*time.Minute) {
+			return
 		}
-
-		type pendingCandidate struct {
-			bar       domain.Bar
-			metrics   domain.Metrics
-			lastPrice float64
+		if bar.Close < s.config.MinPrice || bar.Close > s.config.MaxPrice {
+			return
 		}
+		pq.UpdateOrPush(bar.Symbol, int(bar.Volume))
+	}
 
-		flushBatch := func(batch []pendingBar) bool {
-			batchTimestamp := batch[0].bar.Timestamp
-			if err := s.state.Portfolio.EnsureStartingEquity(batchTimestamp); err != nil {
-				log.Errorf("Failed to refresh starting equity for %s: %v", batchTimestamp.In(markethours.Location).Format("2006-01-02"), err)
-				return true
-			}
+	err := s.client.EnsureStreamConnected(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-			if s.state.IsPaused(batchTimestamp) || !markethours.IsMarketOpen(batchTimestamp) {
-				return true
-			}
-
-			candidates := make([]pendingCandidate, 0, len(batch))
-			for _, pending := range batch {
-				metrics := pending.symbol.GetMetrics()
-				lastPrice := pending.symbol.GetLastPrice()
-
-				// Update portfolio first in case we need to exit a position before evaluating new candidates.
-				if s.state.Portfolio.HasOpenTrade(pending.symbol.Name, pending.bar.Timestamp) {
-					s.state.Portfolio.UpdateOpenTrade(pending.symbol.Name, lastPrice, metrics, pending.bar.Timestamp)
-					continue
-				}
-
-				candidates = append(candidates, pendingCandidate{
-					bar:       pending.bar,
-					metrics:   metrics,
-					lastPrice: lastPrice,
-				})
-			}
-
-			if markethours.HasReachedRegularSessionCloseBuffer(batchTimestamp, 15*time.Minute) {
-				s.state.Portfolio.LiquidateOpenTrades(batchTimestamp)
-				return true
-			}
-
-			if markethours.HasReachedRegularSessionCloseBuffer(batchTimestamp, 30*time.Minute) {
-				return true
-			}
-
-			for _, candidate := range candidates {
-				shouldEmit, _ := s.evaluate(candidate.lastPrice, candidate.metrics)
-				if !shouldEmit {
-					continue
-				}
-
-				select {
-				case out <- domain.Candidate{
-					Symbol:    candidate.bar.Symbol,
-					Timestamp: candidate.bar.Timestamp,
-					Metrics:   candidate.metrics,
-					LastPrice: candidate.lastPrice,
-				}:
-				case <-ctx.Done():
-					return false
-				}
-			}
-
-			return true
+	// subscribe to daily bars in batches of 500
+	start, end, n := 0, 500, len(s.state.SymbolList)-1
+	curBatch, nBatches := 1, n/500
+	if n%500 != 0 {
+		nBatches += 1
+	}
+	for start < end {
+		err = s.client.SubscribeToDailyBars(ctx, handler, s.state.SymbolList[start:end]...)
+		if err != nil {
+			log.Fatal(err)
 		}
-
-		batch := make([]pendingBar, 0, s.config.ChannelBufferSize)
-		for {
-			var bar domain.Bar
-			var ok bool
-
-			select {
-			case <-ctx.Done():
-				return
-			case bar, ok = <-in:
-				if !ok {
-					if len(batch) > 0 {
-						flushBatch(batch)
-					}
-					return
-				}
-			}
-
-			if len(batch) > 0 && !bar.Timestamp.Equal(batch[0].bar.Timestamp) {
-				if !flushBatch(batch) {
-					return
-				}
-				batch = batch[:0]
-			}
-
-			if bar.Volume == 0 || bar.Open == 0 || bar.Close == 0 || bar.High == 0 || bar.Low == 0 {
-				continue
-			}
-
-			symbol, ok := s.state.Symbols.Get(bar.Symbol)
-			if !ok {
-				fmt.Printf("Received bar for unknown symbol: %s\n", bar.Symbol)
-				continue
-			}
-
-			symbol.SetLastPrice(bar.Close)
-			symbol.AddBar(bar)
-			batch = append(batch, pendingBar{bar: bar, symbol: symbol})
+		log.Printf("stream: subscribe dailyBars request sent for %d symbols (batch %d/%d)", end-start, curBatch, nBatches)
+		start += 500
+		end += 500
+		if end > n {
+			end = n + 1
 		}
-	}()
-
-	return done, nil
-}
-
-func (s *Scanner) evaluate(lastPrice float64, metrics domain.Metrics) (bool, string) {
-	if lastPrice == 0 ||
-		metrics.ATR == 0 ||
-		metrics.EMA20 == 0 ||
-		metrics.EMA20Roc == 0 ||
-		metrics.MACD == 0 ||
-		metrics.MACDRoc == 0 ||
-		metrics.MACDSignal == 0 ||
-		metrics.RSI == 0 ||
-		metrics.RelativeVolume20 == 0 ||
-		metrics.TradeCountAccel == 0 ||
-		metrics.CloseStrength == 0 ||
-		metrics.SessionVWAP == 0 {
-		return false, "not-enough-data"
+		curBatch += 1
+		time.Sleep(100 * time.Millisecond) // avoid hitting rate limits
 	}
 
-	if lastPrice > s.config.MaxPrice || lastPrice < s.config.MinPrice {
-		return false, "price-out-of-range"
+	// emit top 10 symbols every minute
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(60 * time.Second):
+			for _, v := range pq.PeekN(10) {
+				out <- v.Value
+			}
+		}
 	}
-
-	if metrics.Volume5m < s.config.MinVolume5m {
-		return false, "5min-volume-too-low"
-	}
-
-	if lastPrice <= metrics.EMA20 {
-		return false, "price-below-moving-average"
-	}
-
-	if metrics.MACD <= metrics.MACDSignal {
-		return false, "macd-below-signal"
-	}
-
-	if metrics.RSI > s.config.MaxRsi || metrics.RSI < s.config.MinRsi {
-		return false, "rsi-out-of-range"
-	}
-
-	if metrics.RelativeVolume20 < s.config.MinRelativeVolume20 {
-		return false, "relative-volume-too-low"
-	}
-
-	if metrics.TradeCountAccel < s.config.MinTradeCountAccel {
-		return false, "trade-count-not-accelerating"
-	}
-
-	if metrics.CloseStrength < s.config.MinCloseStrength {
-		return false, "weak-close"
-	}
-
-	if metrics.ATR/lastPrice > s.config.MaxAtrp {
-		return false, "atrp-above-threshold"
-	}
-
-	if metrics.EMA20Roc < s.config.MinEMA20Roc {
-		return false, "ema-not-rising-strongly"
-	}
-
-	if metrics.MACDRoc < s.config.MinMacdRoc {
-		return false, "macd-negative-roc"
-	}
-
-	vwapPremium := (lastPrice - metrics.SessionVWAP) / metrics.ATR
-	if vwapPremium > s.config.MaxVwapPremiumAtr {
-		return false, "price-too-far-above-vwap"
-	}
-	if vwapPremium < s.config.MinVwapPremiumAtr {
-		return false, "price-too-far-below-vwap"
-	}
-
-	emaPremium := (lastPrice - metrics.EMA20) / metrics.ATR
-	if emaPremium > s.config.MaxEmaPremiumAtr {
-		return false, "price-too-far-above-ema"
-	}
-
-	return true, ""
 }

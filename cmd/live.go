@@ -5,7 +5,7 @@ import (
 
 	"github.com/edwintcloud/go-trade/internal/alpaca"
 	"github.com/edwintcloud/go-trade/internal/config"
-	"github.com/edwintcloud/go-trade/internal/domain"
+	"github.com/edwintcloud/go-trade/internal/execution"
 	"github.com/edwintcloud/go-trade/internal/scanner"
 	"github.com/edwintcloud/go-trade/internal/state"
 	"github.com/labstack/gommon/log"
@@ -45,59 +45,26 @@ func runLive() {
 	state := state.NewState(config, symbolList)
 
 	state.Portfolio.SetBroker(client)
+
 	state.Portfolio.StartDailySummaryScheduler(ctx)
 	client.StreamTradeUpdatesInBackground(ctx, state.Portfolio.HandleTradeUpdate)
 
-	// start scanner before historical loading so fetching and scanning can overlap.
-	minuteBars := make(chan domain.Bar, config.ChannelBufferSize)
-	candidates := make(chan domain.Candidate, config.ChannelBufferSize)
-	scanner := scanner.NewScanner(config, state)
-
-	done, err := scanner.Start(ctx, minuteBars, candidates)
-	if err != nil {
-		log.Errorf("Error starting scanner: %v", err)
-		return
-	}
-
-	applyCandidate := func(candidate domain.Candidate) {
-		state.Portfolio.TryEnterTrade(candidate)
-	}
-
-	historyErrCh := make(chan error, 1)
+	// start scanner to emit candidates based on daily bar data
+	canidates := make(chan string, config.ChannelBufferSize)
+	scanner := scanner.NewScanner(client, config, state)
 	go func() {
-		historyErrCh <- client.StreamLiveMinuteBars(ctx, symbolList, minuteBars)
-	}()
-
-	for {
-		select {
-		case candidate := <-candidates:
-			applyCandidate(candidate)
-		case err := <-historyErrCh:
-			historyErrCh = nil
-			if err != nil {
-				log.Errorf("Error streaming minute bars: %v", err)
-				return
-			}
-		case <-done:
-			if historyErrCh != nil {
-				if err := <-historyErrCh; err != nil {
-					log.Errorf("Error streaming minute bars: %v", err)
-					return
-				}
-				historyErrCh = nil
-			}
-			for {
-				select {
-				case candidate := <-candidates:
-					applyCandidate(candidate)
-				default:
-					state.Portfolio.GenerateReport()
-					return
-				}
-			}
-		case <-ctx.Done():
-			state.Portfolio.GenerateReport()
+		err = scanner.Start(ctx, canidates)
+		if err != nil {
+			log.Errorf("Error starting scanner: %v", err)
 			return
 		}
+	}()
+
+	// blocks until context is done
+	execution := execution.NewExecutionEngine(client, state)
+	err = execution.MonitorCandidates(ctx, canidates)
+	if err != nil {
+		log.Errorf("Error monitoring candidates: %v", err)
+		return
 	}
 }
