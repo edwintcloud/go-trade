@@ -48,18 +48,13 @@ func (p *Portfolio) generateDailyReport(date string) float64 {
 			exitTime = trade.ExitTimestamp.In(markethours.Location).Format("15:04")
 		}
 		profitLoss := float64(trade.Quantity) * (trade.ExitPrice - trade.EntryPrice)
-		vwapPremium := 0.0
-		if trade.EntryMetrics.ATR > 0 && trade.EntryMetrics.SessionVWAP > 0 {
-			vwapPremium = (trade.EntryPrice - trade.EntryMetrics.SessionVWAP) / trade.EntryMetrics.ATR
-		}
-		fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f, RVOL20: %.2fx, TCA: %.2fx, VWAP Premium: %.2f ATR\n",
+		fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f, ATR: %.2f\n",
 			date, trade.Symbol,
 			trade.EntryTimestamp.In(markethours.Location).Format("15:04"), trade.EntryPrice,
 			exitTime, trade.ExitPrice,
 			trade.Quantity, profitLoss,
-			trade.EntryMetrics.RelativeVolume20,
-			trade.EntryMetrics.TradeCountAccel,
-			vwapPremium)
+			trade.EntryMetrics.ATR,
+		)
 	}
 
 	returnPct := (endingEquity - startingEquity) / startingEquity * 100

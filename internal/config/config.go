@@ -29,6 +29,9 @@ type Config struct {
 	MinutesUntilBreakEvenStop int
 	DailyProfitTargetPct      float64
 	// Scanning parameters
+	MinOneMinuteVolume  uint64
+	MinFloat            int64
+	MaxFloat            int64
 	MaxPrice            float64
 	MinPrice            float64
 	MaxAtrp             float64
@@ -68,6 +71,9 @@ func LoadConfig() *Config {
 		MinPositionSizePct:        0.3,
 		MinutesUntilBreakEvenStop: 10,
 		DailyProfitTargetPct:      0.1,
+		MinOneMinuteVolume:        1000,
+		MinFloat:                  1_000_000,
+		MaxFloat:                  50_000_000,
 		MinPrice:                  3.5,
 		MaxPrice:                  40.0,
 		MaxAtrp:                   0.03,

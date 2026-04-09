@@ -16,6 +16,7 @@ type Portfolio struct {
 	startingEquity               map[string]float64        // day -> starting equity
 	openTrades                   map[string]*domain.Trade  // symbol -> open trade
 	closedTrades                 map[string][]domain.Trade // day -> closed trades
+	attemptedEntries             map[string]time.Time      // symbol -> last attempted entry time
 	mu                           sync.RWMutex
 	broker                       *alpaca.Client
 	telegram                     *telegram.TelegramNotifier
@@ -30,11 +31,12 @@ func NewPortfolio(config *config.Config) *Portfolio {
 	}
 	// TODO: should have some logic here for loading previous equity from file or database, and if not found, use the provided equity as starting equity for the day
 	return &Portfolio{
-		startingEquity: make(map[string]float64),
-		openTrades:     make(map[string]*domain.Trade),
-		closedTrades:   make(map[string][]domain.Trade),
-		config:         config,
-		telegram:       telegramNotifier,
+		startingEquity:   make(map[string]float64),
+		openTrades:       make(map[string]*domain.Trade),
+		closedTrades:     make(map[string][]domain.Trade),
+		attemptedEntries: make(map[string]time.Time),
+		config:           config,
+		telegram:         telegramNotifier,
 	}
 }
 

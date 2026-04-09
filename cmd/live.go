@@ -34,7 +34,7 @@ func runLive() {
 	client := alpaca.NewClient(config)
 
 	// determine symbols
-	equitySymbols, err := client.GetSymbols()
+	equitySymbols, err := client.GetSymbols(ctx)
 	if err != nil {
 		log.Errorf("Error getting symbols: %v", err)
 		return
@@ -42,9 +42,12 @@ func runLive() {
 	symbolList := equitySymbols
 	log.Infof("Loaded %d symbols...", len(symbolList))
 
-	state := state.NewState(config, symbolList)
-
-	state.Portfolio.SetBroker(client)
+	state := state.NewState(config, symbolList).WithClient(client)
+	err = state.SeedMetrics()
+	if err != nil {
+		log.Errorf("Error seeding metrics: %v", err)
+		return
+	}
 
 	state.Portfolio.StartDailySummaryScheduler(ctx)
 	client.StreamTradeUpdatesInBackground(ctx, state.Portfolio.HandleTradeUpdate)

@@ -31,12 +31,16 @@ func NewScanner(client *alpaca.Client, config *config.Config, state *state.State
 // caller must keep a map of symbols currently subscribed for strategy
 func (s *Scanner) Start(ctx context.Context, out chan<- string) error {
 	pq := domain.NewPriorityQueue()
+	timestamp := time.Now().In(markethours.Location)
 
 	handler := func(bar stream.Bar) {
-		if !markethours.IsMarketOpen(bar.Timestamp) || markethours.HasReachedRegularSessionCloseBuffer(bar.Timestamp, 30*time.Minute) {
+		if !markethours.IsTradableSession(timestamp) || markethours.HasReachedTradableSessionCloseBuffer(timestamp, 30*time.Minute) {
 			return
 		}
 		if bar.Close < s.config.MinPrice || bar.Close > s.config.MaxPrice {
+			return
+		}
+		if bar.Volume == 0 || bar.Volume < s.config.MinOneMinuteVolume {
 			return
 		}
 		pq.UpdateOrPush(bar.Symbol, int(bar.Volume))

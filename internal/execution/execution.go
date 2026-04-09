@@ -46,7 +46,10 @@ func (e *ExecutionEngine) MonitorCandidates(ctx context.Context, candidates <-ch
 		select {
 		case candidate := <-candidates:
 			log.Debugf("Received candidate: %s", candidate)
-			e.symbolsToSubscribe = append(e.symbolsToSubscribe[1:], candidate) // keep only the 10 most recent candidates
+			e.symbolsToSubscribe = append(e.symbolsToSubscribe, candidate)
+			if len(e.symbolsToSubscribe) > 10 {
+				e.symbolsToSubscribe = e.symbolsToSubscribe[len(e.symbolsToSubscribe)-10:]
+			}
 		case <-ctx.Done():
 			log.Infof("Live trading session ended")
 			return nil
@@ -79,7 +82,7 @@ func (e *ExecutionEngine) ensureSubscriptions(ctx context.Context) {
 	}
 
 	// liquidate all open trades and clear all subscriptions 15 minutes before market close to avoid holding positions overnight
-	if e.state.Portfolio.LenOpenTrades() > 0 && markethours.HasReachedRegularSessionCloseBuffer(timestamp, 15*time.Minute) {
+	if e.state.Portfolio.LenOpenTrades() > 0 && markethours.HasReachedTradableSessionCloseBuffer(timestamp, 15*time.Minute) {
 		log.Infof("15 minutes until market close, liquidating all open trades and clearing all subscriptions")
 		e.state.Portfolio.LiquidateOpenTrades(timestamp)
 		e.symbolsToSubscribe = make([]string, 0, 10)
@@ -96,59 +99,67 @@ func (e *ExecutionEngine) ensureSubscriptions(ctx context.Context) {
 	// TODO: reconcile open trades with current subscriptions and subscribe to any missing symbols for open trades
 }
 
-func (e *ExecutionEngine) handleBar(symbol string, bar stream.Bar) {
-	domainSymbol, ok := e.state.Symbols.Get(symbol)
+func (e *ExecutionEngine) handleBar(bar stream.Bar) {
+	domainSymbol, ok := e.state.Symbols.Get(bar.Symbol)
 	if !ok {
-		log.Warnf("Received bar for unregistered symbol: %s", symbol)
+		log.Warnf("Received bar for unregistered symbol: %s", bar.Symbol)
 		return
 	}
 	domainSymbol.AddBar(domain.BarFromStreamBar(bar))
-	time.Sleep(1 * time.Second) // slight delay to ensure metrics are updated before evaluating entry conditions
-	lastPrice := domainSymbol.GetLastPrice()
+	if e.state.Portfolio.HasOpenTrade(bar.Symbol, bar.Timestamp) {
+		return
+	}
+	time.Sleep(100 * time.Millisecond) // slight delay to ensure metrics are updated before evaluating entry conditions
 	metrics := domainSymbol.GetMetrics()
-	ok, reason := e.evaluateEntryConditions(metrics)
+	ok, reason := e.evaluateEntryConditions(bar.Close, metrics)
 	if ok {
-		log.Infof("Entry conditions met for %s at price %.2f", symbol, lastPrice)
+		log.Infof("Entry conditions met for %s at price %.2f", bar.Symbol, bar.Close)
 		entryTimestamp := time.Now().In(markethours.Location)
 		e.state.Portfolio.TryEnterTrade(domain.Candidate{
-			Symbol:    symbol,
+			Symbol:    bar.Symbol,
 			Timestamp: entryTimestamp,
-			LastPrice: lastPrice,
+			LastPrice: bar.Close,
 			Metrics:   metrics,
 		})
 	} else {
-		log.Debugf("Entry conditions not met for %s at price %.2f: %s", symbol, lastPrice, reason)
+		log.Debugf("Entry conditions not met for %s at price %.2f: %s", bar.Symbol, bar.Close, reason)
 	}
 }
 
-func (e *ExecutionEngine) handleQuote(symbol string, quote stream.Quote) {
-	domainSymbol, ok := e.state.Symbols.Get(symbol)
-	if !ok {
-		log.Warnf("Received quote for unregistered symbol: %s", symbol)
-		return
-	}
+func (e *ExecutionEngine) handleQuote(quote stream.Quote) {
+	// domainSymbol, ok := e.state.Symbols.Get(quote.Symbol)
+	// if !ok {
+	// 	log.Warnf("Received quote for unregistered symbol: %s", quote.Symbol)
+	// 	return
+	// }
 	timestamp := time.Now().In(markethours.Location)
-	// evaluate immediate exit based on metrics
-	if domainSymbol.GetMetrics().HullMaRoc < 0 {
-		log.Infof("Exit conditions met for %s at price %.2f", symbol, quote.BidPrice)
-		e.state.Portfolio.ExitTrade(symbol, timestamp, quote.BidPrice)
+	if !e.state.Portfolio.HasOpenTrade(quote.Symbol, timestamp) {
 		return
 	}
+	// evaluate immediate exit based on metrics
+	// if domainSymbol.GetMetrics().HullMaRoc < 0 {
+	// 	log.Infof("Exit conditions met for %s at price %.2f", quote.Symbol, quote.BidPrice)
+	// 	e.state.Portfolio.ExitTrade(quote.Symbol, timestamp, quote.BidPrice)
+	// 	return
+	// }
 	// evaluate exit based on trailing atr stop loss and update the stop loss price if necessary
-	e.state.Portfolio.EvaluateExitConditions(symbol, quote.BidPrice, timestamp)
+	e.state.Portfolio.EvaluateExitConditions(quote.Symbol, quote.BidPrice, timestamp)
 }
 
 func (e *ExecutionEngine) subscribeToSymbol(ctx context.Context, symbol string) error {
+	log.Debugf("Subscribing to symbol: %s", symbol)
 	// subscribe to minute bars for entry signals
-	err := e.client.SubscribeToBars(ctx, func(bar stream.Bar) { e.handleBar(symbol, bar) }, symbol)
+	err := e.client.SubscribeToBars(ctx, func(bar stream.Bar) { e.handleBar(bar) }, symbol)
 	if err != nil {
 		return err
 	}
 	// subscribe to quote updates for updating price in real time for open trades
-	return e.client.SubscribeQuotes(ctx, func(quote stream.Quote) { e.handleQuote(symbol, quote) }, symbol)
+	return e.client.SubscribeQuotes(ctx, func(quote stream.Quote) { e.handleQuote(quote) }, symbol)
 }
 
 func (e *ExecutionEngine) unsubscribeFromSymbol(symbol string) error {
+	log.Debugf("Unsubscribing from symbol: %s", symbol)
+
 	err := e.client.UnsubscribeFromBars(symbol)
 	if err != nil {
 		return err
@@ -156,12 +167,21 @@ func (e *ExecutionEngine) unsubscribeFromSymbol(symbol string) error {
 	return e.client.UnsubscribeQuotes(symbol)
 }
 
-func (e *ExecutionEngine) evaluateEntryConditions(metrics domain.Metrics) (bool, string) {
-	if metrics.HullMa == 0 || metrics.HullMaRoc == 0 {
+func (e *ExecutionEngine) evaluateEntryConditions(lastPrice float64, metrics domain.Metrics) (bool, string) {
+	if metrics.HullMa == 0 || metrics.HullMaRoc == 0 || metrics.VWAPRoc == 0 {
 		return false, "not-ready"
+	}
+	if metrics.VWAPRoc < 0 {
+		return false, "vwap-roc-negative"
 	}
 	if metrics.HullMaRoc < 0 {
 		return false, "hull-ma-roc-negative"
+	}
+	if lastPrice < metrics.HullMa {
+		return false, "price-below-hull-ma"
+	}
+	if lastPrice-metrics.HullMa > 0.02*lastPrice {
+		return false, "price-above-hull-ma-by-more-than-2-percent"
 	}
 	return true, ""
 }

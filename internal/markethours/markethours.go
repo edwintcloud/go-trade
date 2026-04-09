@@ -17,11 +17,125 @@ func DurationElapsed(duration time.Duration, start, current time.Time) bool {
 	return current.Sub(start) >= duration
 }
 
-func regularSessionBounds(t time.Time) (time.Time, time.Time) {
+// adds while respecting market hours
+func Add(t time.Time, duration time.Duration) time.Time {
+	result := t.In(Location)
+
+	if duration >= 0 {
+		for {
+			marketOpen := time.Date(result.Year(), result.Month(), result.Day(), 4, 0, 0, 0, Location)
+			marketClose := time.Date(result.Year(), result.Month(), result.Day(), 20, 0, 0, 0, Location)
+
+			if !IsMarketDay(result) {
+				result = marketOpen.AddDate(0, 0, 1)
+				continue
+			}
+			if result.Before(marketOpen) {
+				result = marketOpen
+			}
+			if result.After(marketClose) || (result.Equal(marketClose) && duration > 0) {
+				result = marketOpen.AddDate(0, 0, 1)
+				continue
+			}
+
+			break
+		}
+
+		remaining := duration
+		for remaining > 0 {
+			marketOpen := time.Date(result.Year(), result.Month(), result.Day(), 4, 0, 0, 0, Location)
+			marketClose := time.Date(result.Year(), result.Month(), result.Day(), 20, 0, 0, 0, Location)
+
+			if !IsMarketDay(result) {
+				result = marketOpen.AddDate(0, 0, 1)
+				continue
+			}
+			if result.Before(marketOpen) {
+				result = marketOpen
+				continue
+			}
+			if !result.Before(marketClose) {
+				result = marketOpen.AddDate(0, 0, 1)
+				continue
+			}
+
+			available := marketClose.Sub(result)
+			if remaining <= available {
+				return result.Add(remaining)
+			}
+
+			remaining -= available
+			result = marketOpen.AddDate(0, 0, 1)
+		}
+
+		return result
+	}
+
+	remaining := -duration
+	for {
+		marketOpen := time.Date(result.Year(), result.Month(), result.Day(), 4, 0, 0, 0, Location)
+		marketClose := time.Date(result.Year(), result.Month(), result.Day(), 20, 0, 0, 0, Location)
+
+		if !IsMarketDay(result) {
+			result = marketClose.AddDate(0, 0, -1)
+			continue
+		}
+		if result.After(marketClose) {
+			result = marketClose
+		}
+		if result.Before(marketOpen) || (result.Equal(marketOpen) && remaining > 0) {
+			result = marketClose.AddDate(0, 0, -1)
+			continue
+		}
+
+		break
+	}
+
+	for remaining > 0 {
+		marketOpen := time.Date(result.Year(), result.Month(), result.Day(), 4, 0, 0, 0, Location)
+		marketClose := time.Date(result.Year(), result.Month(), result.Day(), 20, 0, 0, 0, Location)
+
+		if !IsMarketDay(result) {
+			result = marketClose.AddDate(0, 0, -1)
+			continue
+		}
+		if result.After(marketClose) {
+			result = marketClose
+			continue
+		}
+		if !result.After(marketOpen) {
+			result = marketClose.AddDate(0, 0, -1)
+			continue
+		}
+
+		available := result.Sub(marketOpen)
+		if remaining <= available {
+			return result.Add(-remaining)
+		}
+
+		remaining -= available
+		result = marketClose.AddDate(0, 0, -1)
+	}
+
+	return result
+}
+
+func tradableSessionBounds(t time.Time) (time.Time, time.Time) {
 	local := t.In(Location)
-	open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, Location)
-	close := time.Date(local.Year(), local.Month(), local.Day(), 16, 0, 0, 0, Location)
+	open := time.Date(local.Year(), local.Month(), local.Day(), 7, 0, 0, 0, Location)
+	close := time.Date(local.Year(), local.Month(), local.Day(), 18, 0, 0, 0, Location)
 	return open, close
+}
+
+func IsTradableSession(t time.Time) bool {
+	if !IsMarketDay(t) {
+		return false
+	}
+
+	local := t.In(Location)
+	open, close := tradableSessionBounds(local)
+
+	return local.After(open) && local.Before(close)
 }
 
 func IsRegularSession(t time.Time) bool {
@@ -30,7 +144,9 @@ func IsRegularSession(t time.Time) bool {
 	}
 
 	local := t.In(Location)
-	open, close := regularSessionBounds(local)
+	open := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, Location)
+	close := time.Date(local.Year(), local.Month(), local.Day(), 16, 0, 0, 0, Location)
+
 	return local.After(open) && local.Before(close)
 }
 
@@ -40,8 +156,10 @@ func IsPreMarketSession(t time.Time) bool {
 	}
 
 	local := t.In(Location)
-	return local.After(time.Date(local.Year(), local.Month(), local.Day(), 7, 0, 0, 0, Location)) &&
-		local.Before(time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, Location))
+	open := time.Date(local.Year(), local.Month(), local.Day(), 4, 0, 0, 0, Location)
+	close := time.Date(local.Year(), local.Month(), local.Day(), 9, 30, 0, 0, Location)
+
+	return local.After(open) && local.Before(close)
 }
 
 func IsAfterHoursSession(t time.Time) bool {
@@ -50,8 +168,10 @@ func IsAfterHoursSession(t time.Time) bool {
 	}
 
 	local := t.In(Location)
-	return local.After(time.Date(local.Year(), local.Month(), local.Day(), 16, 0, 0, 0, Location)) &&
-		local.Before(time.Date(local.Year(), local.Month(), local.Day(), 20, 0, 0, 0, Location))
+	open := time.Date(local.Year(), local.Month(), local.Day(), 16, 0, 0, 0, Location)
+	close := time.Date(local.Year(), local.Month(), local.Day(), 20, 0, 0, 0, Location)
+
+	return local.After(open) && local.Before(close)
 }
 
 func IsMarketOpen(t time.Time) bool {
@@ -68,9 +188,9 @@ func IsSameDay(t1, t2 time.Time) bool {
 		t1.In(Location).Day() == t2.In(Location).Day()
 }
 
-func HasReachedRegularSessionCloseBuffer(t time.Time, lead time.Duration) bool {
+func HasReachedTradableSessionCloseBuffer(t time.Time, lead time.Duration) bool {
 	local := t.In(Location)
-	_, close := regularSessionBounds(local)
+	_, close := tradableSessionBounds(local)
 	return !local.Before(close.Add(-lead))
 }
 

@@ -17,3 +17,7 @@
 - hull ma 30 roc
 - when roc is positive, enter
 - when roc is negative, exit
+- use vwap roc for trend confirmation (do not enter when vwap slope is negative)
+
+## TODO
+- do not trade a stock with low volume in last 5 mins, add back volume5ma and use it for filtering

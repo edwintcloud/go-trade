@@ -15,7 +15,15 @@ const (
 	historicalFetchWorkers      = 4
 )
 
-func (c *Client) FetchHistoricalMinuteBars(symbols []string, request marketdata.GetBarsRequest) (map[string][]marketdata.Bar, error) {
+func (c *Client) FetchHistoricalMinuteBars(symbols []string, start, end time.Time) (map[string][]marketdata.Bar, error) {
+	request := marketdata.GetBarsRequest{
+		TimeFrame:  marketdata.OneMin,
+		Start:      start,
+		End:        end,
+		Feed:       marketdata.SIP,
+		Sort:       marketdata.SortAsc,
+		Adjustment: marketdata.AdjustmentRaw,
+	}
 	cachePath, cachePathErr := historicalBarsCachePath(symbols, request)
 	if cachePathErr == nil {
 		if cachedResults, ok, err := readCache[map[string][]marketdata.Bar](cachePath, 0); err == nil && ok {
@@ -42,14 +50,6 @@ func (c *Client) StreamHistoricalMinuteBars(ctx context.Context, symbols []strin
 		return nil
 	}
 
-	request := marketdata.GetBarsRequest{
-		TimeFrame:  marketdata.OneMin,
-		Start:      start,
-		End:        end,
-		Feed:       marketdata.SIP,
-		Sort:       marketdata.SortAsc,
-		Adjustment: marketdata.AdjustmentRaw,
-	}
 	batches := batchSymbols(symbols, historicalSymbolsPerRequest)
 	workerCount := min(historicalFetchWorkers, len(batches))
 	jobs := make(chan []string)
@@ -83,7 +83,7 @@ func (c *Client) StreamHistoricalMinuteBars(ctx context.Context, symbols []strin
 				default:
 				}
 
-				results, err := c.FetchHistoricalMinuteBars(batch, request)
+				results, err := c.FetchHistoricalMinuteBars(batch, start, end)
 				if err != nil {
 					setErr(err)
 					return

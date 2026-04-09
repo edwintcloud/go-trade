@@ -15,6 +15,7 @@ type Client struct {
 	streamClient    *stream.StocksClient
 	streamConnected atomic.Bool
 	tradeClient     *alpaca.Client
+	floatStore      *FloatStore
 }
 
 func newStocksStreamClient(config *config.Config) *stream.StocksClient {
@@ -37,5 +38,6 @@ func NewClient(config *config.Config) *Client {
 			APISecret: config.AlpacaAPISecret,
 		}),
 		streamClient: newStocksStreamClient(config),
+		floatStore:   NewFloatStore(),
 	}
 }

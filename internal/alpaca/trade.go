@@ -15,10 +15,14 @@ var (
 	SideSell = alpaca.Sell
 )
 
-func (c *Client) GetSymbols() ([]string, error) {
+func (c *Client) GetSymbols(ctx context.Context) ([]string, error) {
 	if cachedSymbols, ok, err := readCache[[]string](symbolsCacheFile, symbolsCacheMaxAge); err == nil && ok {
 		return cachedSymbols, nil
 	}
+	if _, err := c.floatStore.LoadOrFetchFloatData(ctx); err != nil {
+		return nil, fmt.Errorf("float-store: SEC EDGAR fetch error: %w", err)
+	}
+	log.Printf("float-store: %d symbols with float data", c.floatStore.Len())
 
 	assets, err := c.tradeClient.GetAssets(alpaca.GetAssetsRequest{
 		Status:     "active",
@@ -30,9 +34,18 @@ func (c *Client) GetSymbols() ([]string, error) {
 
 	filtered := GetFilteredTradeableAssets(assets)
 
-	result := make([]string, len(filtered))
-	for i, a := range filtered {
-		result[i] = a.Symbol
+	result := []string{}
+	for _, a := range filtered {
+		symbolFloat := c.floatStore.Get(a.Symbol)
+		if symbolFloat == 0 || symbolFloat < c.config.MinFloat || symbolFloat > c.config.MaxFloat {
+			continue
+		}
+
+		result = append(result, a.Symbol)
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no symbols found with float between %d and %d", c.config.MinFloat, c.config.MaxFloat)
 	}
 
 	_ = writeCache(symbolsCacheFile, result)
@@ -40,9 +53,9 @@ func (c *Client) GetSymbols() ([]string, error) {
 	return result, nil
 }
 
-func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (*alpaca.Order, error) {
+func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (string, error) {
 	if qty == 0 {
-		return nil, nil
+		return "", nil
 	}
 
 	var limitPrice float64
@@ -50,13 +63,13 @@ func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (*alpa
 		Feed: marketdata.SIP,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get latest quote for %s: %w", symbol, err)
+		return "", fmt.Errorf("get latest quote for %s: %w", symbol, err)
 	}
 
 	// reject if spread is too wide to avoid bad fills in illiquid stocks
 	spread := quote.AskPrice - quote.BidPrice
 	if side == SideBuy && spread/quote.AskPrice > c.config.MaxSpreadPct {
-		return nil, fmt.Errorf("spread too wide: %.2f%%", spread/quote.AskPrice*100)
+		return "", fmt.Errorf("spread too wide: %.2f%%", spread/quote.AskPrice*100)
 	}
 
 	// base limit price on current quote
@@ -77,11 +90,12 @@ func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (*alpa
 		ExtendedHours: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("place order for %s: %w", symbol, err)
+		return "", fmt.Errorf("place order for %s: %w", symbol, err)
 	}
 
-	log.Infof("Filled %s order for %d shares of %s at average price %.2f", side, qty, symbol, order.FilledAvgPrice.InexactFloat64())
-	return order, nil
+	log.Infof("Placed %s order for %d shares of %s at price %.2f with order id %s", side, qty, symbol, limitPrice, order.ID)
+	// TODO: should add poll and retry logic here to check avg fill price and ensure order is fully filled
+	return order.ID, nil
 }
 
 func (c *Client) GetAccount() (*alpaca.Account, error) {

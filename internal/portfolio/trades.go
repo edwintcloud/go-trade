@@ -151,7 +151,8 @@ func (p *Portfolio) determineTradeQuantityWithBuyingPower(entryTimestamp time.Ti
 }
 
 func (p *Portfolio) symbolOnCooldown(symbol string, entryTimestamp time.Time) bool {
-	cooldown := time.Duration(p.config.SameSymbolCooldownMinutes) * time.Minute
+	tradeCooldown := time.Duration(p.config.SameSymbolCooldownMinutes) * time.Minute
+	retryCooldown := 5 * time.Minute
 	for _, trade := range p.closedTrades[entryTimestamp.In(markethours.Location).Format("2006-01-02")] {
 		if trade.Symbol != symbol || trade.ExitTimestamp.IsZero() {
 			continue
@@ -159,7 +160,12 @@ func (p *Portfolio) symbolOnCooldown(symbol string, entryTimestamp time.Time) bo
 		if entryTimestamp.Before(trade.ExitTimestamp) {
 			continue
 		}
-		if entryTimestamp.Sub(trade.ExitTimestamp) < cooldown {
+		if entryTimestamp.Sub(trade.ExitTimestamp) < tradeCooldown {
+			return true
+		}
+	}
+	if lastAttempt, exists := p.attemptedEntries[symbol]; exists {
+		if entryTimestamp.Sub(lastAttempt) < retryCooldown {
 			return true
 		}
 	}
@@ -208,9 +214,8 @@ func (p *Portfolio) evaluateOpenTradesForAnOpportunitySwap(symbol string, entryT
 			continue
 		}
 
-		// curTradeATRP := trade.CurrentMetrics.ATR / trade.CurrentPrice
-		// newTradeATRP := metrics.ATR / entryPrice
-		exitCondition := trade.CurrentMetrics.TradeCountAccel < metrics.TradeCountAccel && trade.CurrentMetrics.RelativeVolume20 < metrics.RelativeVolume20
+		// exit only if the new trade is rising faster than the existing trade based on hull ma roc
+		exitCondition := trade.CurrentMetrics.HullMaRoc*1.003 < metrics.HullMaRoc
 		if exitCondition {
 			p.exitTrade(trade.Symbol, entryTimestamp, trade.CurrentPrice)
 			return
@@ -244,12 +249,14 @@ func (p *Portfolio) TryEnterTrade(candidate domain.Candidate) bool {
 
 	// enter trade with broker if available
 	if p.broker != nil {
-		order, err := p.broker.SubmitOrder(symbol, quantity, alpaca.Buy)
+		p.attemptedEntries[symbol] = entryTimestamp
+		_, err := p.broker.SubmitOrder(symbol, quantity, alpaca.Buy)
 		if err != nil {
 			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
 			return false
 		}
-		entryPrice = order.FilledAvgPrice.InexactFloat64()
+		delete(p.attemptedEntries, symbol)
+		// entryPrice = order.FilledAvgPrice.InexactFloat64()
 		stopPrice = p.stopPriceFor(entryPrice, metrics.ATR)
 		// send notification for new trade
 		if p.telegram != nil {
@@ -298,12 +305,12 @@ func (p *Portfolio) exitTrade(symbol string, exitTimestamp time.Time, exitPrice 
 
 	// exit trade with broker if available
 	if p.broker != nil {
-		order, err := p.broker.SubmitOrder(symbol, trade.Quantity, alpaca.Sell)
+		_, err := p.broker.SubmitOrder(symbol, trade.Quantity, alpaca.Sell)
 		if err != nil {
 			log.Errorf("Failed to submit order to broker for %s: %v", symbol, err)
 			return
 		}
-		exitPrice = order.FilledAvgPrice.InexactFloat64()
+		// exitPrice = order.FilledAvgPrice.InexactFloat64()
 		// send notification for closed trade
 		if p.telegram != nil {
 			p.telegram.NotifyTradeClosed(domain.Trade{
