@@ -14,6 +14,12 @@ func (p *Portfolio) hasOpenTrade(symbol string) bool {
 	return exists
 }
 
+func (p *Portfolio) LenOpenTrades() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.openTrades)
+}
+
 func (p *Portfolio) EvaluateExitConditions(symbol string, lastPrice float64, timestamp time.Time) {
 	if !p.hasOpenTrade(symbol) {
 		return

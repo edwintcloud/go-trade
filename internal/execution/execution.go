@@ -79,7 +79,7 @@ func (e *ExecutionEngine) ensureSubscriptions(ctx context.Context) {
 	}
 
 	// liquidate all open trades and clear all subscriptions 15 minutes before market close to avoid holding positions overnight
-	if markethours.HasReachedRegularSessionCloseBuffer(timestamp, 15*time.Minute) {
+	if e.state.Portfolio.LenOpenTrades() > 0 && markethours.HasReachedRegularSessionCloseBuffer(timestamp, 15*time.Minute) {
 		log.Infof("15 minutes until market close, liquidating all open trades and clearing all subscriptions")
 		e.state.Portfolio.LiquidateOpenTrades(timestamp)
 		e.symbolsToSubscribe = make([]string, 0, 10)
