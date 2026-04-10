@@ -44,7 +44,7 @@ func runLive() {
 
 	state := state.NewState(config, symbolList).WithClient(client)
 
-	state.Portfolio.StartDailySummaryScheduler(ctx)
+	// state.Portfolio.StartDailySummaryScheduler(ctx)
 
 	// start scanner to emit candidates based on daily bar data
 	canidates := make(chan string, config.ChannelBufferSize)

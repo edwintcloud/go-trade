@@ -27,6 +27,7 @@ type Config struct {
 	DailyProfitTargetPct      float64
 	// Scanning parameters
 	MinAverageVolume5Min uint64
+	MinTotalVolume5Min   uint64
 	MinFloat             uint64
 	MaxFloat             uint64
 	MinPrice             float64
@@ -54,7 +55,8 @@ func LoadConfig() *Config {
 		TrailingStopPctFallback:   0.05,
 		MinPositionSizePct:        0.3,
 		DailyProfitTargetPct:      0.1,
-		MinAverageVolume5Min:      5_000,
+		MinAverageVolume5Min:      1_000,
+		MinTotalVolume5Min:        15_000,
 		MinFloat:                  1_000_000,
 		MaxFloat:                  50_000_000,
 		MinPrice:                  3.5,

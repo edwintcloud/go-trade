@@ -3,11 +3,13 @@ package domain
 import (
 	"container/heap"
 	"sync"
+	"time"
 )
 
 type PriorityQueueItem struct {
-	Value    string
-	Priority int
+	Value                 string
+	Priority              int
+	AccumulationStartTime time.Time
 }
 
 type PriorityQueue struct {
@@ -66,6 +68,31 @@ func (pq *PriorityQueue) UpdateOrPush(value string, priority int) {
 	}
 	pq.q[index].Priority = priority
 	heap.Fix(pq, index)
+}
+
+// AccumulateOrPush adds priorityAddition to the existing priority if the item exists and its accumulation duration has not expired,
+// otherwise it pushes a new item with the provided priorityAddition as its priority
+func (pq *PriorityQueue) AccumulateOrPush(value string, priorityAddition int, curTime time.Time, accumulationDuration time.Duration) {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	index, indexFound := pq.index[value]
+	if indexFound {
+		item := pq.q[index]
+		if curTime.Sub(item.AccumulationStartTime) <= accumulationDuration {
+			pq.q[index].Priority += priorityAddition
+			heap.Fix(pq, index)
+			return
+		} else {
+			// accumulation duration has expired, so we remove the old item and push a new one below
+			heap.Remove(pq, index)
+		}
+	}
+	// either item doesn't exist or accumulation duration has expired, so we push a new item
+	heap.Push(pq, PriorityQueueItem{
+		Value:                 value,
+		Priority:              priorityAddition,
+		AccumulationStartTime: curTime,
+	})
 }
 
 func (pq *PriorityQueue) PeekN(n int) []PriorityQueueItem {

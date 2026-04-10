@@ -106,20 +106,6 @@ func (e *ExecutionEngine) ensureSubscriptions(ctx context.Context) {
 	// TODO: reconcile open trades with current subscriptions and subscribe to any missing symbols for open trades
 }
 
-func (e *ExecutionEngine) handleBar(bar stream.Bar) {
-	domainSymbol, ok := e.state.Symbols.Get(bar.Symbol)
-	if !ok {
-		log.Warnf("Received bar for unregistered symbol: %s", bar.Symbol)
-		return
-	}
-	domainSymbol.AddBar(domain.BarFromStreamBar(bar))
-	if e.state.Portfolio.HasOpenTrade(bar.Symbol) {
-		return
-	}
-	time.Sleep(100 * time.Millisecond) // slight delay to ensure metrics are updated before evaluating entry conditions
-
-}
-
 func (e *ExecutionEngine) handleQuote(quote stream.Quote) {
 	domainSymbol, ok := e.state.Symbols.Get(quote.Symbol)
 	if !ok {
@@ -150,11 +136,6 @@ func (e *ExecutionEngine) handleQuote(quote stream.Quote) {
 
 func (e *ExecutionEngine) subscribeToSymbol(ctx context.Context, symbol string) error {
 	log.Debugf("Subscribing to symbol: %s", symbol)
-	// subscribe to minute bars for entry signals
-	err := e.client.SubscribeToBars(ctx, func(bar stream.Bar) { e.handleBar(bar) }, symbol)
-	if err != nil {
-		return err
-	}
 	// subscribe to quote updates for updating price in real time for open trades
 	return e.client.SubscribeQuotes(ctx, func(quote stream.Quote) { e.handleQuote(quote) }, symbol)
 }
@@ -162,10 +143,6 @@ func (e *ExecutionEngine) subscribeToSymbol(ctx context.Context, symbol string) 
 func (e *ExecutionEngine) unsubscribeFromSymbol(symbol string) error {
 	log.Debugf("Unsubscribing from symbol: %s", symbol)
 
-	err := e.client.UnsubscribeFromBars(symbol)
-	if err != nil {
-		return err
-	}
 	return e.client.UnsubscribeQuotes(symbol)
 }
 
