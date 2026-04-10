@@ -257,7 +257,7 @@ func (fs *FloatStore) saveToCSV(path string) error {
 	}
 	fs.floats.Range(func(key, value any) bool {
 		sym := key.(string)
-		shares := value.(int64)
+		shares := value.(uint64)
 		if _, err := fmt.Fprintf(f, "%s,%d\n", sym, shares); err != nil {
 			return false
 		}
