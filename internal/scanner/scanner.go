@@ -66,7 +66,7 @@ func (s *Scanner) Start(ctx context.Context, out chan<- string) error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		log.Printf("stream: subscribe dailyBars request sent for %d symbols (batch %d/%d)", end-start, curBatch, nBatches)
+		log.Printf("stream: subscribe bars request sent for %d symbols (batch %d/%d)", end-start, curBatch, nBatches)
 		start += 500
 		end += 500
 		if end > n {
