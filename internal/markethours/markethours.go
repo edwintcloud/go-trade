@@ -1,6 +1,8 @@
 package markethours
 
-import "time"
+import (
+	"time"
+)
 
 var Location, _ = time.LoadLocation("America/New_York")
 
@@ -14,7 +16,7 @@ func IsMarketDay(t time.Time) bool {
 }
 
 func DurationElapsed(duration time.Duration, start, current time.Time) bool {
-	return current.Sub(start) >= duration
+	return current.In(Location).Sub(start.In(Location)) >= duration
 }
 
 // adds while respecting market hours

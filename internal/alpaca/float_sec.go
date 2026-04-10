@@ -230,7 +230,7 @@ func (fs *FloatStore) fetchFrameData(ctx context.Context, client *http.Client, c
 		if !ok || ticker == "" {
 			continue
 		}
-		shares := int64(dp.Val)
+		shares := uint64(dp.Val)
 		if shares <= 0 {
 			continue
 		}

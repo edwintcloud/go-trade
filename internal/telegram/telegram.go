@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/edwintcloud/go-trade/internal/config"
-	"github.com/edwintcloud/go-trade/internal/domain"
 )
 
 // TelegramNotifier sends optional Telegram notifications for broker-confirmed trade events.
@@ -27,23 +26,23 @@ func NewTelegramNotifier(config *config.Config) *TelegramNotifier {
 }
 
 // NotifyTradeOpened sends a message when an opening fill creates or adds to a position.
-func (n *TelegramNotifier) NotifyTradeOpened(trade domain.Trade) {
+func (n *TelegramNotifier) NotifyTradeOpened(symbol string, qty uint64, entryPrice float64, stopPrice float64) {
 	text := fmt.Sprintf(
 		"🚀 Trade Opened\n\nSymbol: %s\nQty: %d\nPrice: $%.2f\nStop: $%.2f",
-		trade.Symbol,
-		trade.Quantity,
-		trade.EntryPrice,
-		trade.StopPrice,
+		symbol,
+		qty,
+		entryPrice,
+		stopPrice,
 	)
 	n.send(text)
 }
 
 // NotifyTradeClosed sends a message when a position is fully closed.
-func (n *TelegramNotifier) NotifyTradeClosed(trade domain.Trade) {
+func (n *TelegramNotifier) NotifyTradeClosed(symbol string, exitPrice float64) {
 	text := fmt.Sprintf(
 		"🏁 Trade Closed\n\nSymbol: %s\nExit Price: $%.2f",
-		trade.Symbol,
-		trade.ExitPrice,
+		symbol,
+		exitPrice,
 	)
 	n.send(text)
 }

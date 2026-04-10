@@ -15,6 +15,11 @@ var (
 	SideSell = alpaca.Sell
 )
 
+type SubmittedOrder struct {
+	OrderID    string
+	LimitPrice float64
+}
+
 func (c *Client) GetSymbols(ctx context.Context) ([]string, error) {
 	if cachedSymbols, ok, err := readCache[[]string](symbolsCacheFile, symbolsCacheMaxAge); err == nil && ok {
 		return cachedSymbols, nil
@@ -53,9 +58,9 @@ func (c *Client) GetSymbols(ctx context.Context) ([]string, error) {
 	return result, nil
 }
 
-func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (string, error) {
+func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (*SubmittedOrder, error) {
 	if qty == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	var limitPrice float64
@@ -63,13 +68,13 @@ func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (strin
 		Feed: marketdata.SIP,
 	})
 	if err != nil {
-		return "", fmt.Errorf("get latest quote for %s: %w", symbol, err)
+		return nil, fmt.Errorf("get latest quote for %s: %w", symbol, err)
 	}
 
 	// reject if spread is too wide to avoid bad fills in illiquid stocks
 	spread := quote.AskPrice - quote.BidPrice
 	if side == SideBuy && spread/quote.AskPrice > c.config.MaxSpreadPct {
-		return "", fmt.Errorf("spread too wide: %.2f%%", spread/quote.AskPrice*100)
+		return nil, fmt.Errorf("spread too wide: %.2f%%", spread/quote.AskPrice*100)
 	}
 
 	// base limit price on current quote
@@ -90,12 +95,15 @@ func (c *Client) SubmitOrder(symbol string, qty uint64, side alpaca.Side) (strin
 		ExtendedHours: true,
 	})
 	if err != nil {
-		return "", fmt.Errorf("place order for %s: %w", symbol, err)
+		return nil, fmt.Errorf("place order for %s: %w", symbol, err)
 	}
 
 	log.Infof("Placed %s order for %d shares of %s at price %.2f with order id %s", side, qty, symbol, limitPrice, order.ID)
 	// TODO: should add poll and retry logic here to check avg fill price and ensure order is fully filled
-	return order.ID, nil
+	return &SubmittedOrder{
+		OrderID:    order.ID,
+		LimitPrice: limitPrice,
+	}, nil
 }
 
 func (c *Client) GetAccount() (*alpaca.Account, error) {
@@ -108,8 +116,4 @@ func (c *Client) GetPositions() ([]alpaca.Position, error) {
 
 func (c *Client) GetPosition(symbol string) (*alpaca.Position, error) {
 	return c.tradeClient.GetPosition(symbol)
-}
-
-func (c *Client) StreamTradeUpdatesInBackground(ctx context.Context, handler func(alpaca.TradeUpdate)) {
-	c.tradeClient.StreamTradeUpdatesInBackground(ctx, handler)
 }

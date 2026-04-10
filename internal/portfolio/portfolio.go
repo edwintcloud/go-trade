@@ -40,28 +40,18 @@ func NewPortfolio(config *config.Config) *Portfolio {
 	}
 }
 
-func (p *Portfolio) SetStartingEquity(date time.Time, equity float64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	dateKey := date.In(markethours.Location).Format("2006-01-02")
-	p.startingEquity[dateKey] = equity
-}
-
 func (p *Portfolio) SetBroker(broker *alpaca.Client) {
 	p.mu.Lock()
 	p.broker = broker
 	p.mu.Unlock()
 
 	now := time.Now().In(markethours.Location)
-	if err := p.EnsureStartingEquity(now); err != nil {
+	if err := p.SetStartingEquity(now); err != nil {
 		panic("failed to get account information from broker: " + err.Error())
-	}
-	if err := p.HydrateOpenTradesFromBroker(now); err != nil {
-		panic("failed to hydrate broker positions: " + err.Error())
 	}
 }
 
-func (p *Portfolio) EnsureStartingEquity(date time.Time) error {
+func (p *Portfolio) SetStartingEquity(date time.Time) error {
 	dayKey := date.In(markethours.Location).Format("2006-01-02")
 
 	p.mu.RLock()

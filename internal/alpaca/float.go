@@ -26,17 +26,17 @@ func NewFloatStore() *FloatStore {
 }
 
 // Set stores the float for a symbol.
-func (fs *FloatStore) Set(symbol string, shares int64) {
+func (fs *FloatStore) Set(symbol string, shares uint64) {
 	fs.floats.Store(strings.ToUpper(symbol), shares)
 }
 
 // Get returns the float for a symbol, or 0 if unknown.
-func (fs *FloatStore) Get(symbol string) int64 {
+func (fs *FloatStore) Get(symbol string) uint64 {
 	v, ok := fs.floats.Load(strings.ToUpper(symbol))
 	if !ok {
 		return 0
 	}
-	return v.(int64)
+	return v.(uint64)
 }
 
 // Len returns the number of symbols with float data.
@@ -95,14 +95,14 @@ func (fs *FloatStore) LoadFromCSV(source string) error {
 		if strings.EqualFold(symbol, "symbol") {
 			continue
 		}
-		shares, err := strconv.ParseInt(valueStr, 10, 64)
+		shares, err := strconv.ParseUint(valueStr, 10, 64)
 		if err != nil {
 			// Try parsing as float and truncate
 			f, ferr := strconv.ParseFloat(valueStr, 64)
 			if ferr != nil {
 				continue
 			}
-			shares = int64(f)
+			shares = uint64(f)
 		}
 		if shares > 0 {
 			fs.Set(symbol, shares)

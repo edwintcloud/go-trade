@@ -1,7 +1,7 @@
 package alpaca
 
 import (
-	"sync/atomic"
+	"sync"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
@@ -13,16 +13,9 @@ type Client struct {
 	config          *config.Config
 	dataClient      *marketdata.Client
 	streamClient    *stream.StocksClient
-	streamConnected atomic.Bool
 	tradeClient     *alpaca.Client
 	floatStore      *FloatStore
-}
-
-func newStocksStreamClient(config *config.Config) *stream.StocksClient {
-	return stream.NewStocksClient(
-		marketdata.SIP,
-		stream.WithCredentials(config.AlpacaAPIKey, config.AlpacaAPISecret),
-	)
+	streamConnected sync.Once
 }
 
 func NewClient(config *config.Config) *Client {
@@ -37,7 +30,10 @@ func NewClient(config *config.Config) *Client {
 			APIKey:    config.AlpacaAPIKey,
 			APISecret: config.AlpacaAPISecret,
 		}),
-		streamClient: newStocksStreamClient(config),
-		floatStore:   NewFloatStore(),
+		streamClient: stream.NewStocksClient(
+			marketdata.SIP,
+			stream.WithCredentials(config.AlpacaAPIKey, config.AlpacaAPISecret),
+		),
+		floatStore: NewFloatStore(),
 	}
 }

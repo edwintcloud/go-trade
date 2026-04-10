@@ -5,13 +5,10 @@ import (
 )
 
 type Trade struct {
-	Symbol         string
 	EntryTimestamp time.Time
 	ExitTimestamp  time.Time
 	EntryPrice     float64
-	EntryMetrics   Metrics
-	CurrentPrice   float64
-	CurrentMetrics Metrics
+	Symbol         *Symbol
 	ExitPrice      float64
 	StopPrice      float64
 	Quantity       uint64

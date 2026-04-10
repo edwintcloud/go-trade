@@ -43,14 +43,8 @@ func runLive() {
 	log.Infof("Loaded %d symbols...", len(symbolList))
 
 	state := state.NewState(config, symbolList).WithClient(client)
-	err = state.SeedMetrics()
-	if err != nil {
-		log.Errorf("Error seeding metrics: %v", err)
-		return
-	}
 
 	state.Portfolio.StartDailySummaryScheduler(ctx)
-	client.StreamTradeUpdatesInBackground(ctx, state.Portfolio.HandleTradeUpdate)
 
 	// start scanner to emit candidates based on daily bar data
 	canidates := make(chan string, config.ChannelBufferSize)
@@ -64,7 +58,7 @@ func runLive() {
 	}()
 
 	// blocks until context is done
-	execution := execution.NewExecutionEngine(client, state)
+	execution := execution.NewExecutionEngine(config, state).WithClient(client)
 	err = execution.MonitorCandidates(ctx, canidates)
 	if err != nil {
 		log.Errorf("Error monitoring candidates: %v", err)

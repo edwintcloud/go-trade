@@ -3,6 +3,7 @@ package domain
 import (
 	"time"
 
+	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 )
 
@@ -27,6 +28,20 @@ func BarFromStreamBar(bar stream.Bar) Bar {
 		Close:      bar.Close,
 		Volume:     bar.Volume,
 		Timestamp:  bar.Timestamp,
+		TradeCount: bar.TradeCount,
+		VWAP:       bar.VWAP,
+	}
+}
+
+func BarFromMarketdataBar(symbol string, bar marketdata.Bar) Bar {
+	return Bar{
+		Symbol:     symbol,
+		Timestamp:  bar.Timestamp,
+		Open:       bar.Open,
+		Close:      bar.Close,
+		High:       bar.High,
+		Low:        bar.Low,
+		Volume:     bar.Volume,
 		TradeCount: bar.TradeCount,
 		VWAP:       bar.VWAP,
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
 	"github.com/edwintcloud/go-trade/internal/alpaca"
+	"github.com/edwintcloud/go-trade/internal/config"
 	"github.com/edwintcloud/go-trade/internal/domain"
 	"github.com/edwintcloud/go-trade/internal/markethours"
 	"github.com/edwintcloud/go-trade/internal/state"
@@ -14,19 +15,25 @@ import (
 )
 
 type ExecutionEngine struct {
-	client             *alpaca.Client
+	config             *config.Config
 	state              *state.State
+	client             *alpaca.Client
 	symbolsToSubscribe []string
 	subscribedToSymbol map[string]bool
 }
 
-func NewExecutionEngine(client *alpaca.Client, state *state.State) *ExecutionEngine {
+func NewExecutionEngine(config *config.Config, state *state.State) *ExecutionEngine {
 	return &ExecutionEngine{
-		client:             client,
+		config:             config,
 		state:              state,
 		symbolsToSubscribe: make([]string, 0, 10),
 		subscribedToSymbol: make(map[string]bool),
 	}
+}
+
+func (e *ExecutionEngine) WithClient(client *alpaca.Client) *ExecutionEngine {
+	e.client = client
+	return e
 }
 
 func (e *ExecutionEngine) MonitorCandidates(ctx context.Context, candidates <-chan string) error {
@@ -70,7 +77,7 @@ func (e *ExecutionEngine) ensureSubscriptions(ctx context.Context) {
 	}
 	timestamp := time.Now().In(markethours.Location)
 	for symbol := range e.subscribedToSymbol {
-		hasOpenTrade := e.state.Portfolio.HasOpenTrade(symbol, timestamp)
+		hasOpenTrade := e.state.Portfolio.HasOpenTrade(symbol)
 		if !slices.Contains(e.symbolsToSubscribe, symbol) && !hasOpenTrade {
 			err := e.unsubscribeFromSymbol(symbol)
 			if err != nil {
@@ -106,44 +113,39 @@ func (e *ExecutionEngine) handleBar(bar stream.Bar) {
 		return
 	}
 	domainSymbol.AddBar(domain.BarFromStreamBar(bar))
-	if e.state.Portfolio.HasOpenTrade(bar.Symbol, bar.Timestamp) {
+	if e.state.Portfolio.HasOpenTrade(bar.Symbol) {
 		return
 	}
 	time.Sleep(100 * time.Millisecond) // slight delay to ensure metrics are updated before evaluating entry conditions
-	metrics := domainSymbol.GetMetrics()
-	ok, reason := e.evaluateEntryConditions(bar.Close, metrics)
-	if ok {
-		log.Infof("Entry conditions met for %s at price %.2f", bar.Symbol, bar.Close)
-		entryTimestamp := time.Now().In(markethours.Location)
-		e.state.Portfolio.TryEnterTrade(domain.Candidate{
-			Symbol:    bar.Symbol,
-			Timestamp: entryTimestamp,
-			LastPrice: bar.Close,
-			Metrics:   metrics,
-		})
-	} else {
-		log.Debugf("Entry conditions not met for %s at price %.2f: %s", bar.Symbol, bar.Close, reason)
-	}
+
 }
 
 func (e *ExecutionEngine) handleQuote(quote stream.Quote) {
-	// domainSymbol, ok := e.state.Symbols.Get(quote.Symbol)
-	// if !ok {
-	// 	log.Warnf("Received quote for unregistered symbol: %s", quote.Symbol)
-	// 	return
-	// }
-	timestamp := time.Now().In(markethours.Location)
-	if !e.state.Portfolio.HasOpenTrade(quote.Symbol, timestamp) {
+	domainSymbol, ok := e.state.Symbols.Get(quote.Symbol)
+	if !ok {
+		log.Warnf("Received quote for unregistered symbol: %s", quote.Symbol)
 		return
 	}
-	// evaluate immediate exit based on metrics
-	// if domainSymbol.GetMetrics().HullMaRoc < 0 {
-	// 	log.Infof("Exit conditions met for %s at price %.2f", quote.Symbol, quote.BidPrice)
-	// 	e.state.Portfolio.ExitTrade(quote.Symbol, timestamp, quote.BidPrice)
-	// 	return
-	// }
-	// evaluate exit based on trailing atr stop loss and update the stop loss price if necessary
-	e.state.Portfolio.EvaluateExitConditions(quote.Symbol, quote.BidPrice, timestamp)
+	domainSymbol.UpdateSymbolWithQuote(quote)
+
+	if !e.state.Portfolio.HasOpenTrade(quote.Symbol) {
+		// evaluate for entry
+		metrics := domainSymbol.GetMetrics()
+		strategyApproved, reason := e.evaluateEntryConditions(quote.BidPrice, metrics)
+		if !strategyApproved {
+			log.Debugf("Entry conditions not met for %s at price %.2f: %s", quote.Symbol, quote.BidPrice, reason)
+			return
+		}
+		riskApproved, reason := e.state.Portfolio.TryEnterTrade(domainSymbol)
+		if !riskApproved {
+			log.Debugf("Risk conditions not met for %s at price %.2f: %s", quote.Symbol, quote.BidPrice, reason)
+			return
+		}
+		log.Infof("Entering trade for %s at price %.2f based on entry conditions and risk management approval", quote.Symbol, quote.BidPrice)
+	} else {
+		// evaluate for exit
+		e.state.Portfolio.EvaluateExitConditions(domainSymbol)
+	}
 }
 
 func (e *ExecutionEngine) subscribeToSymbol(ctx context.Context, symbol string) error {
@@ -168,11 +170,14 @@ func (e *ExecutionEngine) unsubscribeFromSymbol(symbol string) error {
 }
 
 func (e *ExecutionEngine) evaluateEntryConditions(lastPrice float64, metrics domain.Metrics) (bool, string) {
-	if metrics.HullMa == 0 || metrics.HullMaRoc == 0 || metrics.VWAPRoc == 0 {
+	if metrics.HullMa == 0 || metrics.HullMaRoc == 0 || metrics.VWAPRoc == 0 || metrics.AverageVolume5Min == 0 {
 		return false, "not-ready"
 	}
 	if metrics.VWAPRoc < 0 {
 		return false, "vwap-roc-negative"
+	}
+	if metrics.AverageVolume5Min < float64(e.config.MinAverageVolume5Min) {
+		return false, "average-volume-5min-too-low"
 	}
 	if metrics.HullMaRoc < 0 {
 		return false, "hull-ma-roc-negative"
@@ -182,6 +187,9 @@ func (e *ExecutionEngine) evaluateEntryConditions(lastPrice float64, metrics dom
 	}
 	if lastPrice-metrics.HullMa > 0.02*lastPrice {
 		return false, "price-above-hull-ma-by-more-than-2-percent"
+	}
+	if metrics.BidAskSpreadPct > e.config.MaxSpreadPct {
+		return false, "bid-ask-spread-too-wide"
 	}
 	return true, ""
 }

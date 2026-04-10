@@ -48,12 +48,11 @@ func (p *Portfolio) generateDailyReport(date string) float64 {
 			exitTime = trade.ExitTimestamp.In(markethours.Location).Format("15:04")
 		}
 		profitLoss := float64(trade.Quantity) * (trade.ExitPrice - trade.EntryPrice)
-		fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f, ATR: %.2f\n",
+		fmt.Printf("%s - %s: Enter: %s ($%.2f), Exit: %s ($%.2f), Qty: %d, P/L: $%.2f\n",
 			date, trade.Symbol,
 			trade.EntryTimestamp.In(markethours.Location).Format("15:04"), trade.EntryPrice,
 			exitTime, trade.ExitPrice,
 			trade.Quantity, profitLoss,
-			trade.EntryMetrics.ATR,
 		)
 	}
 

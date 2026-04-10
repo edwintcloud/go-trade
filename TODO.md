@@ -21,3 +21,5 @@
 
 ## TODO
 - do not trade a stock with low volume in last 5 mins, add back volume5ma and use it for filtering
+- should not be entering trades when bid ask spread is too wide
+- should not be entering trades when volume is too low (average volume)

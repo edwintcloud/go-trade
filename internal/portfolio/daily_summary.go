@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/edwintcloud/go-trade/internal/markethours"
-	"github.com/labstack/gommon/log"
 )
 
 const dailySummaryHour = 20
@@ -52,11 +51,6 @@ func (p *Portfolio) maybeSendDailySummary(now time.Time) {
 
 	scheduledAt := time.Date(local.Year(), local.Month(), local.Day(), dailySummaryHour, 0, 0, 0, markethours.Location)
 	if local.Before(scheduledAt) {
-		return
-	}
-
-	if err := p.EnsureStartingEquity(local); err != nil {
-		log.Errorf("Failed to prepare daily summary for %s: %v", local.Format("2006-01-02"), err)
 		return
 	}
 

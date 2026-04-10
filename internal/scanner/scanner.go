@@ -37,18 +37,10 @@ func (s *Scanner) Start(ctx context.Context, out chan<- string) error {
 		if !markethours.IsTradableSession(timestamp) || markethours.HasReachedTradableSessionCloseBuffer(timestamp, 30*time.Minute) {
 			return
 		}
-		if bar.Close < s.config.MinPrice || bar.Close > s.config.MaxPrice {
-			return
-		}
-		if bar.Volume == 0 || bar.Volume < s.config.MinOneMinuteVolume {
+		if bar.Close < s.config.MinPrice || bar.Close > s.config.MaxPrice || bar.Symbol == "" || bar.Volume == 0 {
 			return
 		}
 		pq.UpdateOrPush(bar.Symbol, int(bar.Volume))
-	}
-
-	err := s.client.EnsureStreamConnected(ctx)
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	// subscribe to daily bars in batches of 500
@@ -58,7 +50,7 @@ func (s *Scanner) Start(ctx context.Context, out chan<- string) error {
 		nBatches += 1
 	}
 	for start < end {
-		err = s.client.SubscribeToDailyBars(ctx, handler, s.state.SymbolList[start:end]...)
+		err := s.client.SubscribeToDailyBars(ctx, handler, s.state.SymbolList[start:end]...)
 		if err != nil {
 			log.Fatal(err)
 		}
